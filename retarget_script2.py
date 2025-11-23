@@ -5796,7 +5796,7 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
         print(f"使用するフィールド頂点数: {len(field_points)}")
 
         # KDTreeを使用して近傍点を検索（各ステップで新しいKDTreeを構築）
-        kdtree = cKDTree(field_points)
+        kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
         # カスタムRBF補間で新しい頂点位置を計算
         step_displacements = np.zeros((num_vertices, 3))
@@ -5927,7 +5927,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
                 delta_positions -= adjustment_delta
 
         # KDTreeを使用して近傍点を検索
-        kdtree = cKDTree(field_points)
+        kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
         # カスタムRBF補間で新しい頂点位置を計算
         step_displacements = np.zeros((num_vertices, 3))
@@ -6826,7 +6826,7 @@ def get_deformation_field(field_data_path: str) -> dict:
             print(f"Warning: Could not process kdtree_query_k value: {e}")
 
     # KDTree の構築
-    kdtree = cKDTree(field_points)
+    kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
     field_info = {
         'data': data,
@@ -7797,7 +7797,7 @@ def process_field_deformation_simple(target_obj, field_data_path, blend_shape_la
     field_weights = data['weights']
     field_matrix = Matrix(data['world_matrix'])
     field_matrix_inv = field_matrix.inverted()
-    kdtree = cKDTree(field_points)
+    kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
     original_positions = np.array([v.co for v in eval_mesh.vertices])
 
@@ -10244,7 +10244,7 @@ def apply_bone_field_delta(armature_obj: bpy.types.Object, field_data_path: str,
         field_points = all_field_points[step]
         delta_positions = all_delta_positions[step]
         # KDTreeを使用して近傍点を検索（各ステップで新しいKDTreeを構築）
-        kdtree = cKDTree(field_points)
+        kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
         # ルートボーンから処理を開始
         root_displacement = Vector((0, 0, 0))
