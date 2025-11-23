@@ -11991,19 +11991,15 @@ def reset_bone_weights(target_obj, bone_groups):
 
 def store_weights(target_obj, bone_groups_to_store):
     """Save vertex group weights"""
-    weights = {}
+    group_names = {g.index: g.name for g in target_obj.vertex_groups if g.name in bone_groups_to_store}
+    vertex_weights = {}
     for vert in target_obj.data.vertices:
-        weights[vert.index] = {}
-        for group in target_obj.vertex_groups:
-            if group.name in bone_groups_to_store:
-                try:
-                    for g in vert.groups:
-                        if g.group == group.index:
-                            weights[vert.index][group.name] = g.weight
-                            break
-                except RuntimeError:
-                    continue
-    return weights
+        weights = {}
+        for g in vert.groups:
+            if g.group in group_names:
+                weights[group_names[g.group]] = g.weight
+        vertex_weights[vert.index] = weights
+    return vertex_weights
 
 def restore_weights(target_obj, stored_weights):
     """Restore saved weights"""
