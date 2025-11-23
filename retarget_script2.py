@@ -5806,39 +5806,29 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
             batch_weights = deform_weights[start_idx:end_idx]
 
             # バッチ内の全頂点をフィールド空間に変換（現在の累積変位を考慮）
-            batch_world = current_world_positions[start_idx:end_idx].copy()
+            batch_world = current_world_positions[start_idx:end_idx]
             batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
 
-            # 各頂点ごとに逆距離加重法で補間
-            batch_displacements = np.zeros((len(batch_field), 3))
+            # 近傍点を検索（最大k点）
+            k_use = min(k, len(field_points))
+            distances, indices = kdtree.query(batch_field, k=k_use)
 
-            for i, point in enumerate(batch_field):
-                # 近傍点を検索（最大k点）
-                k_use = min(k, len(field_points))
-                distances, indices = kdtree.query(point, k=k_use)
+            # 逆距離の重みを計算
+            weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
 
-                # 距離が0の場合（完全に一致する点がある場合）
-                if distances[0] < 1e-10:
-                    batch_displacements[i] = delta_positions[indices[0]]
-                    continue
+            # 重みの正規化
+            weights /= np.sum(weights, axis=1, keepdims=True)
 
-                # 逆距離の重みを計算
-                weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
-
-                # 重みの正規化
-                weights /= np.sum(weights)
-
-                # 重み付き平均で変位を計算
-                weighted_deltas = delta_positions[indices] * weights[:, np.newaxis]
-                batch_displacements[i] = np.sum(weighted_deltas, axis=0) * batch_weights[i]
+            # 重み付き平均で変位を計算
+            weighted_deltas = delta_positions[indices] * weights[..., np.newaxis]
+            batch_displacements = np.sum(weighted_deltas, axis=1) * batch_weights[:, np.newaxis]
 
             # ワールド空間での変位を計算
-            for i, displacement in enumerate(batch_displacements):
-                world_displacement = field_matrix.to_3x3() @ Vector(displacement)
-                step_displacements[start_idx + i] = world_displacement
+            world_displacements = np.array([field_matrix.to_3x3() @ Vector(v) for v in batch_displacements])
+            step_displacements[start_idx:end_idx] = world_displacements
 
-                # 現在のワールド位置を更新（次のステップのために）
-                current_world_positions[start_idx + i] += world_displacement
+            # 現在のワールド位置を更新（次のステップのために）
+            current_world_positions[start_idx:end_idx] += world_displacements
 
         # このステップの変位を累積変位に追加
         cumulative_displacements += step_displacements
@@ -5905,7 +5895,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
     for step_idx, (step, step_start, step_end) in enumerate(processed_steps):
         field_points = all_field_points[step].copy()
         delta_positions = all_delta_positions[step].copy()
-        original_delta_positions = all_delta_positions[step].copy()
+        original_delta_positions = all_delta_positions[step]
 
         print(f"ステップ {step_idx+1}/{len(processed_steps)} (step {step}) の変形を適用中...")
         print(f"ステップ値範囲: {step_start:.3f} -> {step_end:.3f}")
@@ -5937,39 +5927,29 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
             batch_weights = deform_weights[start_idx:end_idx]
 
             # バッチ内の全頂点をフィールド空間に変換
-            batch_world = current_world_positions[start_idx:end_idx].copy()
+            batch_world = current_world_positions[start_idx:end_idx]
             batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
 
-            # 各頂点ごとに逆距離加重法で補間
-            batch_displacements = np.zeros((len(batch_field), 3))
+            # 近傍点を検索（最大k点）
+            k_use = min(k, len(field_points))
+            distances, indices = kdtree.query(batch_field, k=k_use)
 
-            for i, point in enumerate(batch_field):
-                # 近傍点を検索（最大k点）
-                k_use = min(k, len(field_points))
-                distances, indices = kdtree.query(point, k=k_use)
+            # 逆距離の重みを計算
+            weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
 
-                # 距離が0の場合（完全に一致する点がある場合）
-                if distances[0] < 1e-10:
-                    batch_displacements[i] = delta_positions[indices[0]]
-                    continue
+            # 重みの正規化
+            weights /= np.sum(weights, axis=1, keepdims=True)
 
-                # 逆距離の重みを計算
-                weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
-
-                # 重みの正規化
-                weights /= np.sum(weights)
-
-                # 重み付き平均で変位を計算
-                weighted_deltas = delta_positions[indices] * weights[:, np.newaxis]
-                batch_displacements[i] = np.sum(weighted_deltas, axis=0) * batch_weights[i]
+            # 重み付き平均で変位を計算
+            weighted_deltas = delta_positions[indices] * weights[..., np.newaxis]
+            batch_displacements = np.sum(weighted_deltas, axis=1) * batch_weights[:, np.newaxis]
 
             # ワールド空間での変位を計算
-            for i, displacement in enumerate(batch_displacements):
-                world_displacement = field_matrix.to_3x3() @ Vector(displacement)
-                step_displacements[start_idx + i] = world_displacement
+            world_displacements = np.array([field_matrix.to_3x3() @ Vector(v) for v in batch_displacements])
+            step_displacements[start_idx:end_idx] = world_displacements
 
-                # 現在のワールド位置を更新（次のステップのために）
-                current_world_positions[start_idx + i] += world_displacement
+            # 現在のワールド位置を更新（次のステップのために）
+            current_world_positions[start_idx:end_idx] += world_displacements
 
         # このステップの変位を累積変位に追加
         cumulative_displacements += step_displacements

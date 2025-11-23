@@ -5806,39 +5806,29 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
             batch_weights = deform_weights[start_idx:end_idx]
 
             # Transform all vertices within the batch into field space (considering current cumulative displacement)
-            batch_world = current_world_positions[start_idx:end_idx].copy()
+            batch_world = current_world_positions[start_idx:end_idx]
             batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
 
-            # Interpolate using the inverse distance weighting method for each vertex
-            batch_displacements = np.zeros((len(batch_field), 3))
+            # Search for Nearest Points (Up to k Points)
+            k_use = min(k, len(field_points))
+            distances, indices = kdtree.query(batch_field, k=k_use)
 
-            for i, point in enumerate(batch_field):
-                # Search for Nearest Points (Up to k Points)
-                k_use = min(k, len(field_points))
-                distances, indices = kdtree.query(point, k=k_use)
+            # Calculate inverse distance weights
+            weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
 
-                # When the distance is 0 (when there is a point that matches perfectly)
-                if distances[0] < 1e-10:
-                    batch_displacements[i] = delta_positions[indices[0]]
-                    continue
+            # Weight normalization
+            weights /= np.sum(weights, axis=1, keepdims=True)
 
-                # Calculate inverse distance weights
-                weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
-
-                # Weight normalization
-                weights /= np.sum(weights)
-
-                # Calculate displacement using a weighted average
-                weighted_deltas = delta_positions[indices] * weights[:, np.newaxis]
-                batch_displacements[i] = np.sum(weighted_deltas, axis=0) * batch_weights[i]
+            # Calculate displacement using a weighted average
+            weighted_deltas = delta_positions[indices] * weights[..., np.newaxis]
+            batch_displacements = np.sum(weighted_deltas, axis=1) * batch_weights[:, np.newaxis]
 
             # Calculate displacement in world space
-            for i, displacement in enumerate(batch_displacements):
-                world_displacement = field_matrix.to_3x3() @ Vector(displacement)
-                step_displacements[start_idx + i] = world_displacement
+            world_displacements = np.array([field_matrix.to_3x3() @ Vector(v) for v in batch_displacements])
+            step_displacements[start_idx:end_idx] = world_displacements
 
-                # Update the current world position (for the next step)
-                current_world_positions[start_idx + i] += world_displacement
+            # Update the current world position (for the next step)
+            current_world_positions[start_idx:end_idx] += world_displacements
 
         # Add this step displacement to the cumulative displacement
         cumulative_displacements += step_displacements
@@ -5905,7 +5895,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
     for step_idx, (step, step_start, step_end) in enumerate(processed_steps):
         field_points = all_field_points[step].copy()
         delta_positions = all_delta_positions[step].copy()
-        original_delta_positions = all_delta_positions[step].copy()
+        original_delta_positions = all_delta_positions[step]
 
         print(f"Applying transformation for step {step_idx+1}/{len(processed_steps)} (step {step})...")
         print(f"Step value range: {step_start:.3f} -> {step_end:.3f}")
@@ -5937,39 +5927,29 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
             batch_weights = deform_weights[start_idx:end_idx]
 
             # Convert all vertices in the batch to field space
-            batch_world = current_world_positions[start_idx:end_idx].copy()
+            batch_world = current_world_positions[start_idx:end_idx]
             batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
 
-            # Interpolate using the inverse distance weighting method for each vertex
-            batch_displacements = np.zeros((len(batch_field), 3))
+            # Search for Nearest Points (Up to k Points)
+            k_use = min(k, len(field_points))
+            distances, indices = kdtree.query(batch_field, k=k_use)
 
-            for i, point in enumerate(batch_field):
-                # Search for Nearest Points (Up to k Points)
-                k_use = min(k, len(field_points))
-                distances, indices = kdtree.query(point, k=k_use)
+            # Calculate inverse distance weights
+            weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
 
-                # When the distance is 0 (when there is a point that matches perfectly)
-                if distances[0] < 1e-10:
-                    batch_displacements[i] = delta_positions[indices[0]]
-                    continue
+            # Weight normalization
+            weights /= np.sum(weights, axis=1, keepdims=True)
 
-                # Calculate inverse distance weights
-                weights = 1.0 / np.sqrt(distances**2 + rbf_epsilon**2)
-
-                # Weight normalization
-                weights /= np.sum(weights)
-
-                # Calculate displacement using a weighted average
-                weighted_deltas = delta_positions[indices] * weights[:, np.newaxis]
-                batch_displacements[i] = np.sum(weighted_deltas, axis=0) * batch_weights[i]
+            # Calculate displacement using a weighted average
+            weighted_deltas = delta_positions[indices] * weights[..., np.newaxis]
+            batch_displacements = np.sum(weighted_deltas, axis=1) * batch_weights[:, np.newaxis]
 
             # Calculate displacement in world space
-            for i, displacement in enumerate(batch_displacements):
-                world_displacement = field_matrix.to_3x3() @ Vector(displacement)
-                step_displacements[start_idx + i] = world_displacement
+            world_displacements = np.array([field_matrix.to_3x3() @ Vector(v) for v in batch_displacements])
+            step_displacements[start_idx:end_idx] = world_displacements
 
-                # Update the current world position (for the next step)
-                current_world_positions[start_idx + i] += world_displacement
+            # Update the current world position (for the next step)
+            current_world_positions[start_idx:end_idx] += world_displacements
 
         # Add this step displacement to the cumulative displacement
         cumulative_displacements += step_displacements
