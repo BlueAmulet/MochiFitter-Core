@@ -15321,9 +15321,6 @@ def apply_smoothing_to_vertex_group(cloth_obj, vertex_group_name, smoothing_radi
                 current_weights[i] = group.weight
                 break
 
-    # cKDTreeを使用して近傍検索を効率化
-    kdtree = cKDTree(vertex_coords)
-
     # スムージング済みウェイト配列を初期化
     smoothed_weights = np.copy(current_weights)
 
@@ -15334,21 +15331,14 @@ def apply_smoothing_to_vertex_group(cloth_obj, vertex_group_name, smoothing_radi
 
     # 最初のイテレーションでneighbor_indicesをキャッシュ
     if neighbors_cache is None:
-        neighbors_cache = {}
+        # cKDTreeを使用して近傍検索を効率化
+        kdtree = cKDTree(vertex_coords)
+        neighbors_cache = [np.array(x) for x in kdtree.query_ball_point(vertex_coords, smoothing_radius)]
 
     for iteration_idx in range(iteration):
         # 各頂点に対してスムージングを適用
         for i in range(num_vertices):
-            # 最初のイテレーションでneighbor_indicesを計算・キャッシュ、二回目以降はキャッシュを使用
-            if iteration_idx == 0:
-                if i not in neighbors_cache:
-                    neighbor_indices = kdtree.query_ball_point(vertex_coords[i], smoothing_radius)
-                    neighbors_cache[i] = neighbor_indices
-                else:
-                    neighbor_indices = neighbors_cache[i]
-            else:
-                neighbor_indices = neighbors_cache[i]
-
+            neighbor_indices = neighbors_cache[i]
             if len(neighbor_indices) > 1:  # 自分自身以外の近傍が存在する場合
                 # 近傍頂点への距離を計算
                 neighbor_coords = vertex_coords[neighbor_indices]
@@ -15371,8 +15361,9 @@ def apply_smoothing_to_vertex_group(cloth_obj, vertex_group_name, smoothing_radi
                     #     weights[self_index[0]] *= 2.0
 
                     # 重み付き平均を計算
-                    if np.sum(weights) > 0.001:
-                        smoothed_weights[i] = np.sum(neighbor_weights * weights) / np.sum(weights)
+                    weights_sum = np.sum(weights)
+                    if weights_sum > 0.001:
+                        smoothed_weights[i] = neighbor_weights @ weights / weights_sum
                     else:
                         smoothed_weights[i] = current_weights[i]
                 else:
