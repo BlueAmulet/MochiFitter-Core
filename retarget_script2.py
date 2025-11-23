@@ -1650,14 +1650,14 @@ def parse_args():
             blend_shape_values = None
             blend_shape_mappings = None
             mesh_renderers = None
-            input_clothing_fbx_path = args.output;
+            input_clothing_fbx_path = args.output
             if i == 0:
                 if args.hips_position:
                     x, y, z = map(float, args.hips_position.split(','))
                     hips_position = Vector((x, y, z))
-                target_meshes = args.target_meshes;
-                init_pose = args.init_pose;
-                blend_shapes = args.blend_shapes;
+                target_meshes = args.target_meshes
+                init_pose = args.init_pose
+                blend_shapes = args.blend_shapes
                 # Parse blend shape values if provided
                 if args.blend_shape_values:
                     try:
@@ -1690,13 +1690,13 @@ def parse_args():
                     except ValueError as e:
                         print(f"Error: Invalid mesh renderers format: {e}")
                         sys.exit(1)
-                input_clothing_fbx_path = args.input;
+                input_clothing_fbx_path = args.input
 
-            skip_blend_shape_generation = True;
+            skip_blend_shape_generation = True
             if i == len(config_paths) - 1:
-                skip_blend_shape_generation = False;
+                skip_blend_shape_generation = False
 
-            do_not_use_base_pose = config_data.get('doNotUseBasePose', 0);
+            do_not_use_base_pose = config_data.get('doNotUseBasePose', 0)
 
             # Create configuration pair
             config_pair = {
@@ -2120,7 +2120,7 @@ def load_cloth_metadata(filepath):
                     print(f"Created vertex group '{debug_group_name}' with {len(unmapped_indices)} vertices")
 
                     # デバッグ情報
-                    print(f"First 5 unmapped vertices world positions:")
+                    print("First 5 unmapped vertices world positions:")
                     for idx in list(unmapped_indices)[:5]:
                         print(f"Vertex {idx}: {vertices_world[idx]}")
 
@@ -3980,7 +3980,7 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
                 "UpperChest" not in clothing_humanoid_to_bone and
                 "UpperChest" in base_humanoid_to_bone):
                 should_preserve = True
-                print(f"Preserving UpperChest bone weights due to Chest condition")
+                print("Preserving UpperChest bone weights due to Chest condition")
 
             # Condition 2: LeftLowerLeg exists in clothing, LeftFoot missing in clothing but exists in base
             elif (humanoid_name == "LeftFoot" and
@@ -3989,7 +3989,7 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
                   "LeftFoot" not in clothing_humanoid_to_bone and
                   "LeftFoot" in base_humanoid_to_bone):
                 should_preserve = True
-                print(f"Preserving LeftFoot bone weights due to LeftLowerLeg condition")
+                print("Preserving LeftFoot bone weights due to LeftLowerLeg condition")
 
             # Condition 2: RightLowerLeg exists in clothing, RightFoot missing in clothing but exists in base
             elif (humanoid_name == "RightFoot" and
@@ -3998,7 +3998,7 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
                   "RightFoot" not in clothing_humanoid_to_bone and
                   "RightFoot" in base_humanoid_to_bone):
                 should_preserve = True
-                print(f"Preserving RightFoot bone weights due to RightLowerLeg condition")
+                print("Preserving RightFoot bone weights due to RightLowerLeg condition")
 
             # Condition 3: LeftLowerLeg or LeftFoot exists in clothing, LeftToe missing in clothing but exists in base
             elif (humanoid_name == "LeftToe" and
@@ -4007,7 +4007,7 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
                   "LeftToe" not in clothing_humanoid_to_bone and
                   "LeftToe" in base_humanoid_to_bone):
                 should_preserve = True
-                print(f"Preserving LeftToe bone weights due to LeftLowerLeg/LeftFoot condition")
+                print("Preserving LeftToe bone weights due to LeftLowerLeg/LeftFoot condition")
 
             # Condition 3: RightLowerLeg or RightFoot exists in clothing, RightToe missing in clothing but exists in base
             elif (humanoid_name == "RightToe" and
@@ -4016,7 +4016,7 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
                   "RightToe" not in clothing_humanoid_to_bone and
                   "RightToe" in base_humanoid_to_bone):
                 should_preserve = True
-                print(f"Preserving RightToe bone weights due to RightLowerLeg/RightFoot condition")
+                print("Preserving RightToe bone weights due to RightLowerLeg/RightFoot condition")
 
             elif (humanoid_name == "LeftBreast" and
                   "LeftBreast" not in clothing_humanoid_to_bone and
@@ -4024,7 +4024,7 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
                   (clothing_humanoid_to_bone["Chest"] in clothing_bone_names or clothing_humanoid_to_bone["UpperChest"] in clothing_bone_names) and
                   "LeftBreast" in base_humanoid_to_bone):
                 should_preserve = True
-                print(f"Preserving LeftBreast bone weights due to Chest condition")
+                print("Preserving LeftBreast bone weights due to Chest condition")
 
             elif (humanoid_name == "RightBreast" and
                   "RightBreast" not in clothing_humanoid_to_bone and
@@ -4032,7 +4032,7 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
                   (clothing_humanoid_to_bone["Chest"] in clothing_bone_names or clothing_humanoid_to_bone["UpperChest"] in clothing_bone_names) and
                   "RightBreast" in base_humanoid_to_bone):
                 should_preserve = True
-                print(f"Preserving RightBreast bone weights due to Chest condition")
+                print("Preserving RightBreast bone weights due to Chest condition")
 
             if should_preserve:
                 print(f"Skipping processing for preserved bone: {humanoid_name} ({bone_name})")
@@ -5291,7 +5291,7 @@ def create_overlapping_vertices_attributes(clothing_meshes, base_avatar_data, di
         overlap_attr_name: 重なり頂点フラグ用のカスタム属性の名前
         world_pos_attr_name: ワールド座標を保存するカスタム属性の名前
     """
-    print(f"Creating custom attributes for overlapping vertices with similar weight patterns...")
+    print("Creating custom attributes for overlapping vertices with similar weight patterns...")
 
     # チェック対象の頂点グループを取得
     target_groups = get_humanoid_and_auxiliary_bone_groups(base_avatar_data)
@@ -5733,7 +5733,7 @@ def inverse_bone_deform_all_vertices(armature_obj, mesh_obj):
         if (vertex_index + 1) % 1000 == 0:
             print(f"進捗: {vertex_index + 1}/{len(vertices)} 頂点処理完了")
 
-    print(f"ボーン変形の逆変換が完了しました")
+    print("ボーン変形の逆変換が完了しました")
 
     # 変形後の頂点をメッシュに適用
     if mesh_obj.data.shape_keys:
@@ -14050,7 +14050,7 @@ def normalize_weights_from_overlapping_uvmap(clothing_meshes, base_avatar_data, 
                     else:
                         mesh_obj.vertex_groups[group_name].add([vert_idx], 0.0, 'REPLACE')
 
-    print(f"重なっている頂点のウェイト正規化が完了しました。")
+    print("重なっている頂点のウェイト正規化が完了しました。")
 
 def check_edge_direction_similarity(directions1, directions2, angle_threshold=3.0):
     """
@@ -16006,7 +16006,7 @@ def apply_distance_normal_based_smoothing(body_obj, cloth_obj, distance_min=0.0,
 
             # 2. スムージング処理（original_weightsがすべて0でない場合のみ）
             if np.any(original_weights > 0):
-                print(f"    スムージング処理実行中...")
+                print("    スムージング処理実行中...")
                 neighbors_cache_result = apply_smoothing_to_vertex_group(cloth_obj, target_group_name, smoothing_radius, iteration=3, use_distance_weighting=True, gaussian_falloff=True, neighbors_cache=neighbors_cache_result)
 
                 # 3. スムージング後のウェイトを取得
@@ -16018,7 +16018,7 @@ def apply_distance_normal_based_smoothing(body_obj, cloth_obj, distance_min=0.0,
                             break
 
                 # 4. 合成処理
-                print(f"    合成処理...")
+                print("    合成処理...")
                 for i in range(len(cloth_obj.data.vertices)):
                     # 生成された頂点グループのウェイトを合成の重みとして使用
                     blend_factor = mask_weights[i]
@@ -16029,7 +16029,7 @@ def apply_distance_normal_based_smoothing(body_obj, cloth_obj, distance_min=0.0,
                     # 最終ウェイトを設定
                     target_group.add([i], final_weight, 'REPLACE')
             else:
-                print(f"    スキップ: original_weightsがすべて0のため処理をスキップします")
+                print("    スキップ: original_weightsがすべて0のため処理をスキップします")
 
             print(f"    頂点グループ '{target_group_name}' の処理完了")
 
@@ -18077,7 +18077,7 @@ def round_bone_coordinates(armature: bpy.types.Object, decimal_places: int = 6) 
         decimal_places: 四捨五入する小数点以下の桁数 (デフォルト: 6)
     """
     if not armature or armature.type != 'ARMATURE':
-        print(f"Warning: Invalid armature object for rounding bone coordinates")
+        print("Warning: Invalid armature object for rounding bone coordinates")
         return
 
     # エディットモードに切り替え
@@ -18389,14 +18389,14 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         bpy.ops.object.mode_set(mode='OBJECT')
 
         # Load base file
-        print(f"Status: ベースファイル読み込み中")
+        print("Status: ベースファイル読み込み中")
         print(f"Progress: {(pair_index + 0.05) / total_pairs * 0.9:.3f}")
         load_base_file(args.base)
         base_load_time = time.time()
         print(f"ベースファイル読み込み: {base_load_time - start_time:.2f}秒")
 
         # Process base avatar
-        print(f"Status: ベースアバター処理中")
+        print("Status: ベースアバター処理中")
         print(f"Progress: {(pair_index + 0.1) / total_pairs * 0.9:.3f}")
         base_mesh, base_armature, base_avatar_data = process_base_avatar(
             config_pair['base_fbx'],
@@ -18404,7 +18404,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         )
 
         # Process clothing avatar
-        print(f"Status: 衣装データ処理中")
+        print("Status: 衣装データ処理中")
         print(f"Progress: {(pair_index + 0.15) / total_pairs * 0.9:.3f}")
         clothing_meshes, clothing_armature, clothing_avatar_data = process_clothing_avatar(
             config_pair['input_clothing_fbx_path'],
@@ -18432,7 +18432,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             )
             print(f"is_A_pose: {_is_A_pose}")
         if _is_A_pose and base_avatar_data and base_avatar_data.get('basePoseA', None):
-            print(f"AポーズのためAポーズ用ベースポーズを使用")
+            print("AポーズのためAポーズ用ベースポーズを使用")
             base_avatar_data['basePose'] = base_avatar_data['basePoseA']
 
         base_pose_filepath = base_avatar_data.get('basePose', None)
@@ -18444,7 +18444,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         base_process_time = time.time()
         print(f"ベースアバター処理: {base_process_time - clothing_process_time:.2f}秒")
 
-        print(f"Status: クロスメタデータ読み込み中")
+        print("Status: クロスメタデータ読み込み中")
         print(f"Progress: {(pair_index + 0.2) / total_pairs * 0.9:.3f}")
         cloth_metadata, vertex_index_mapping = load_cloth_metadata(args.cloth_metadata)
         metadata_load_time = time.time()
@@ -18452,7 +18452,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
 
         # メッシュマテリアルデータを読み込み（初回のみ）
         if pair_index == 0:
-            print(f"Status: メッシュマテリアルデータ読み込み中")
+            print("Status: メッシュマテリアルデータ読み込み中")
             print(f"Progress: {(pair_index + 0.22) / total_pairs * 0.9:.3f}")
             load_mesh_material_data(args.mesh_material_data)
             material_load_time = time.time()
@@ -18461,13 +18461,13 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             material_load_time = metadata_load_time
 
         # Setup weight transfer
-        print(f"Status: ウェイト転送セットアップ中")
+        print("Status: ウェイト転送セットアップ中")
         print(f"Progress: {(pair_index + 0.25) / total_pairs * 0.9:.3f}")
         setup_weight_transfer()
         setup_time = time.time()
         print(f"ウェイト転送セットアップ: {setup_time - metadata_load_time:.2f}秒")
 
-        print(f"Status: ベースアバターウェイト更新中")
+        print("Status: ベースアバターウェイト更新中")
         print(f"Progress: {(pair_index + 0.3) / total_pairs * 0.9:.3f}")
         remove_empty_vertex_groups(base_mesh)
 
@@ -18490,7 +18490,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
 
         # Templateからの変換の場合股下の頂点グループをここで作成しておく
         if clothing_avatar_data.get("name", None) == "Template":
-            print(f"Templateからの変換 股下の頂点グループを作成")
+            print("Templateからの変換 股下の頂点グループを作成")
             current_active_object = bpy.context.view_layer.objects.active
             template_fbx_path = clothing_avatar_data.get("defaultFBXPath", None)
             clothing_avatar_data_path = config_pair['clothing_avatar_data']
@@ -18525,7 +18525,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
                     template_armature = modifier.object
                     break
             if template_armature is None:
-                print(f"Warning: Armatureモディファイアが見つかりません")
+                print("Warning: Armatureモディファイアが見つかりません")
                 return
             # select_vertices_by_conditions(template_obj, "MF_crotch", clothing_avatar_data, radius=0.075, max_angle_degrees=45.0)
             # for obj in clothing_meshes:
@@ -18647,11 +18647,11 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             bpy.data.objects.remove(bpy.data.objects["Body.Template.Eyes"], do_unlink=True)
             bpy.data.objects.remove(bpy.data.objects["Body.Template.Head"], do_unlink=True)
             bpy.data.objects.remove(bpy.data.objects["Armature.Template"], do_unlink=True)
-            print(f"Templateからの変換 股下の頂点グループ作成完了")
+            print("Templateからの変換 股下の頂点グループ作成完了")
             bpy.context.view_layer.objects.active = current_active_object
 
         # Apply BlendShape Deformation Fields before pose application
-        print(f"Status: BlendShape用 Deformation Field適用中")
+        print("Status: BlendShape用 Deformation Field適用中")
         print(f"Progress: {(pair_index + 0.33) / total_pairs * 0.9:.3f}")
         blend_shape_labels = config_pair['blend_shapes'].split(',') if config_pair['blend_shapes'] else None
         if blend_shape_labels:
@@ -18664,13 +18664,13 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print(f"BlendShape用 Deformation Field適用: {blendshape_time - base_weights_time:.2f}秒")
 
         # Apply pose from JSON
-        print(f"Status: ポーズ適用中")
+        print("Status: ポーズ適用中")
         print(f"Progress: {(pair_index + 0.35) / total_pairs * 0.9:.3f}")
         add_clothing_pose_from_json(clothing_armature, config_pair['pose_data'], config_pair['init_pose'], config_pair['clothing_avatar_data'], config_pair['base_avatar_data'])
         pose_time = time.time()
         print(f"ポーズ適用: {pose_time - blendshape_time:.2f}秒")
 
-        print(f"Status: 重複頂点属性設定中")
+        print("Status: 重複頂点属性設定中")
         print(f"Progress: {(pair_index + 0.4) / total_pairs * 0.9:.3f}")
         create_overlapping_vertices_attributes(clothing_meshes, base_avatar_data)
         vertices_attributes_time = time.time()
@@ -18680,7 +18680,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             create_hinge_bone_group(obj, clothing_armature, clothing_avatar_data)
 
         # Process each mesh object with armature modifier
-        print(f"Status: メッシュ変形処理中")
+        print("Status: メッシュ変形処理中")
         print(f"Progress: {(pair_index + 0.45) / total_pairs * 0.9:.3f}")
         propagated_groups_map = {}  # メッシュごとの伝播記録用グループ名を記録
         field_distance_groups = {}  # 各メッシュのフィールド距離頂点グループを記録
@@ -18786,7 +18786,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print(f"ベースメッシュ複製: {duplicate_time - cycle1_end:.2f}秒")
 
         # まず最初に包含関係を調べる
-        print(f"Status: メッシュの包含関係検出中")
+        print("Status: メッシュの包含関係検出中")
         print(f"Progress: {(pair_index + 0.5) / total_pairs * 0.9:.3f}")
         containing_objects = find_containing_objects(clothing_meshes, threshold=0.04)
         print(f"Found {sum(len(contained) for contained in containing_objects.values())} objects that are contained within others")
@@ -18798,7 +18798,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         armature_settings_dict = {}
 
         # Cycle2の個別処理部分
-        print(f"Status: サイクル2前処理中")
+        print("Status: サイクル2前処理中")
         print(f"Progress: {(pair_index + 0.55) / total_pairs * 0.9:.3f}")
         cycle2_pre_start = time.time()
 
@@ -18903,7 +18903,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print(f"サイクル2前処理全体: {cycle2_pre_end - cycle2_pre_start:.2f}秒")
 
         # Weight transfer処理（包含関係を考慮）
-        print(f"Status: サイクル2ウェイト転送中")
+        print("Status: サイクル2ウェイト転送中")
         print(f"Progress: {(pair_index + 0.6) / total_pairs * 0.9:.3f}")
         weight_transfer_start = time.time()
         for obj in clothing_meshes:
@@ -18954,7 +18954,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         weight_transfer_end = time.time()
         print(f"ウェイト転送処理全体: {weight_transfer_end - weight_transfer_start:.2f}秒")
 
-        print(f"Status: サイクル2後処理中")
+        print("Status: サイクル2後処理中")
         print(f"Progress: {(pair_index + 0.65) / total_pairs * 0.9:.3f}")
         cycle2_post_start = time.time()
         for obj in clothing_meshes:
@@ -18967,32 +18967,32 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         cycle2_post_end = time.time()
         print(f"サイクル2後処理全体: {cycle2_post_end - cycle2_post_start:.2f}秒")
 
-        print(f"Status: ポーズ適用中")
+        print("Status: ポーズ適用中")
         print(f"Progress: {(pair_index + 0.7) / total_pairs * 0.9:.3f}")
         apply_pose_as_rest(clothing_armature)
         pose_rest_time = time.time()
         print(f"ポーズをレストポーズとして適用: {pose_rest_time - cycle2_post_end:.2f}秒")
 
-        print(f"Status: ボーンフィールドデルタ適用中")
+        print("Status: ボーンフィールドデルタ適用中")
         print(f"Progress: {(pair_index + 0.75) / total_pairs * 0.9:.3f}")
         apply_bone_field_delta(clothing_armature, config_pair['field_data'], clothing_avatar_data)
         bone_delta_time = time.time()
         print(f"ボーンフィールドデルタ適用: {bone_delta_time - pose_rest_time:.2f}秒")
 
-        print(f"Status: ポーズ適用中")
+        print("Status: ポーズ適用中")
         print(f"Progress: {(pair_index + 0.85) / total_pairs * 0.9:.3f}")
         apply_pose_as_rest(clothing_armature)
         second_pose_rest_time = time.time()
         print(f"2回目のポーズをレストポーズとして適用: {second_pose_rest_time - bone_delta_time:.2f}秒")
 
-        print(f"Status: すべての変換を適用中")
+        print("Status: すべての変換を適用中")
         print(f"Progress: {(pair_index + 0.9) / total_pairs * 0.9:.3f}")
         apply_all_transforms()
         transforms_time = time.time()
         print(f"すべての変換を適用: {transforms_time - second_pose_rest_time:.2f}秒")
 
         # 伝播させたウェイトを削除
-        print(f"Status: 伝播ウェイト削除中")
+        print("Status: 伝播ウェイト削除中")
         print(f"Progress: {(pair_index + 0.95) / total_pairs * 0.9:.3f}")
         propagated_start = time.time()
         for obj in clothing_meshes:
@@ -19010,7 +19010,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
                 base_avatar_data['auxiliaryBones'] = original_auxiliary_bones
             print("元のボーンデータの復元完了")
 
-        print(f"Status: ヒューマノイドボーン置換中")
+        print("Status: ヒューマノイドボーン置換中")
         print(f"Progress: {(pair_index + 0.95) / total_pairs * 0.9:.3f}")
         base_pose_filepath = None
         if config_pair.get('do_not_use_base_pose', 0) == 0:
@@ -19026,7 +19026,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print(f"ヒューマノイドボーン置換: {bones_replace_time - propagated_end:.2f}秒")
 
         # ConfigファイルのclothingBlendShapeSettingsに基づくblendshape設定
-        print(f"Status: ブレンドシェイプ設定中")
+        print("Status: ブレンドシェイプ設定中")
         print(f"Progress: {(pair_index + 0.96) / total_pairs * 0.9:.3f}")
         blendshape_start = time.time()
         if "clothingBlendShapeSettings" in config_pair['config_data']:
@@ -19046,7 +19046,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         blendshape_end = time.time()
         print(f"ブレンドシェイプ設定: {blendshape_end - blendshape_start:.2f}秒")
 
-        print(f"Status: クロスメタデータ更新中")
+        print("Status: クロスメタデータ更新中")
         print(f"Progress: {(pair_index + 0.97) / total_pairs * 0.9:.3f}")
         metadata_update_start = time.time()
         if args.cloth_metadata and os.path.exists(args.cloth_metadata):
@@ -19065,7 +19065,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print(f"クロスメタデータ更新: {metadata_update_end - metadata_update_start:.2f}秒")
 
         # FBXエクスポート前処理
-        print(f"Status: FBXエクスポート前処理中")
+        print("Status: FBXエクスポート前処理中")
         print(f"Progress: {(pair_index + 0.975) / total_pairs * 0.9:.3f}")
         preprocess_start = time.time()
 
@@ -19133,7 +19133,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         round_bone_coordinates(clothing_armature, decimal_places=6)
 
         # Export as FBX
-        print(f"Status: FBXエクスポート中")
+        print("Status: FBXエクスポート中")
         print(f"Progress: {(pair_index + 0.98) / total_pairs * 0.9:.3f}")
         export_start = time.time()
         export_fbx(args.output)
@@ -19173,14 +19173,14 @@ def main():
 
         sys.stdout.reconfigure(line_buffering=True)
 
-        print(f"Status: アドオン有効化中")
-        print(f"Progress: 0.01")
+        print("Status: アドオン有効化中")
+        print("Progress: 0.01")
         bpy.ops.preferences.addon_enable(module='robust-weight-transfer')
         print(f"Addon enabled: {time.time() - start_time:.2f}秒")
 
         # Parse command line arguments
-        print(f"Status: 引数解析中")
-        print(f"Progress: 0.02")
+        print("Status: 引数解析中")
+        print("Progress: 0.02")
         args = parse_args()
         parse_time = time.time()
         print(f"引数解析: {parse_time - start_time:.2f}秒")
@@ -19235,9 +19235,9 @@ def main():
                     pass
 
         total_time = time.time() - start_time
-        print(f"Progress: 1.00")
+        print("Progress: 1.00")
         print(f"\n{'='*60}")
-        print(f"全体処理完了")
+        print("全体処理完了")
         print(f"成功: {successful_pairs}/{total_pairs} ペア")
         print(f"合計時間: {total_time:.2f}秒")
         print(f"{'='*60}")
