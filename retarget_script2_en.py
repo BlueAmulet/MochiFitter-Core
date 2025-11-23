@@ -15132,7 +15132,7 @@ def create_distance_normal_based_vertex_group(body_obj, cloth_obj, distance_thre
     #     kd.insert(center, face_index)
 
     # kd.balance()
-    kd = cKDTree(face_centers)
+    # kd = cKDTree(face_centers)
 
     # Build a KDTree for the vertices of the clothing mesh (for the new implementation)
     vertex_positions = []
