@@ -1116,6 +1116,13 @@ def process_single_blendshape_transition_set(current_settings: list, next_settin
 
     return transition_set
 
+def np_transform_points(matrix: Matrix, points: np.ndarray) -> np.ndarray:
+    M = np.array(matrix)
+    ones = np.ones((len(points), 1), dtype=points.dtype)
+    points_h = np.column_stack((points, ones))
+    transformed = points_h @ M.T
+    return transformed[:, :3]
+
 def apply_blendshape_operation_with_shape_key_name(target_obj, operation, target_shape_key_name, rigid_transformation=False):
     target_shape_key = target_obj.data.shape_keys.key_blocks.get(target_shape_key_name)
     if target_shape_key is None:
@@ -1219,7 +1226,7 @@ def apply_blendshape_operation(target_obj, operation, target_shape_key, rigid_tr
 
         if rigid_transformation:
             # Convert to a numpy array
-            source_points = np.array([target_obj.matrix_world @ Vector(v) for v in vertices])
+            source_points = np_transform_points(target_obj.matrix_world, vertices)
             s, R, t = calculate_optimal_similarity_transform(source_points, world_positions)
             # Calculate the result after applying the similarity transformation
             world_positions = apply_similarity_transform_to_points(source_points, s, R, t)
@@ -5249,8 +5256,8 @@ def create_field_distance_vertex_group(obj, field_data_path, group_name="FieldDi
         batch_vertices = vertices[start_idx:end_idx]
 
         # Transform vertices within the batch into field space
-        batch_world = np.array([eval_obj.matrix_world @ Vector(v) for v in batch_vertices])
-        batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
+        batch_world = np_transform_points(eval_obj.matrix_world, batch_vertices)
+        batch_field = np_transform_points(field_matrix_inv, batch_world)
 
         # k-Nearest Neighbor Search (Batch Processing)
         distances, indices = kdtree.query(batch_field, k=k)
@@ -5779,11 +5786,13 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
     # Initialize cumulative displacement
     cumulative_displacements = np.zeros((num_vertices, 3))
     # Save the current vertex position (world coordinates)
-    current_world_positions = np.array([target_matrix @ Vector(v) for v in vertices])
+    current_world_positions = np_transform_points(target_matrix, vertices)
 
     # If deform_weights is None, set the weight of all vertices to 1.0
     if deform_weights is None:
         deform_weights = np.ones(num_vertices)
+
+    field_matrix_3x3 = np.array(field_matrix.to_3x3())
 
     # Apply the displacement cumulatively at each step
     for step in range(num_steps):
@@ -5805,7 +5814,7 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
 
             # Transform all vertices within the batch into field space (considering current cumulative displacement)
             batch_world = current_world_positions[start_idx:end_idx]
-            batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
+            batch_field = np_transform_points(field_matrix_inv, batch_world)
 
             # Search for Nearest Points (Up to k Points)
             k_use = min(k, len(field_points))
@@ -5822,7 +5831,7 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
             batch_displacements = np.sum(weighted_deltas, axis=1) * batch_weights[:, np.newaxis]
 
             # Calculate displacement in world space
-            world_displacements = np.array([field_matrix.to_3x3() @ Vector(v) for v in batch_displacements])
+            world_displacements = batch_displacements @ field_matrix_3x3.T
             step_displacements[start_idx:end_idx] = world_displacements
 
             # Update the current world position (for the next step)
@@ -5834,7 +5843,7 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
         #print(f"Step {step+1} complete: Maximum displacement {np.max(np.linalg.norm(step_displacements, axis=1)):.6f}")
 
     # Return the final position after transformation
-    final_world_positions = np.array([target_matrix @ Vector(v) for v in vertices]) + cumulative_displacements
+    final_world_positions = np_transform_points(target_matrix, vertices) + cumulative_displacements
     return final_world_positions
 
 def batch_process_vertices_with_custom_range(vertices, all_field_points, all_delta_positions, field_weights,
@@ -5869,7 +5878,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
     # Initialize cumulative displacement
     cumulative_displacements = np.zeros((num_vertices, 3))
     # Save the current vertex position (world coordinates)
-    current_world_positions = np.array([target_matrix @ Vector(v) for v in vertices])
+    current_world_positions = np_transform_points(target_matrix, vertices)
 
     # If deform_weights is None, set the weight of all vertices to 1.0
     if deform_weights is None:
@@ -5888,6 +5897,8 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
             processed_steps.append((step, step_start, step_end))
 
     print(f"Processed steps: {len(processed_steps)}")
+
+    field_matrix_3x3 = np.array(field_matrix.to_3x3())
 
     # Apply the displacement cumulatively at each step
     for step_idx, (step, step_start, step_end) in enumerate(processed_steps):
@@ -5926,7 +5937,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
 
             # Convert all vertices in the batch to field space
             batch_world = current_world_positions[start_idx:end_idx]
-            batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
+            batch_field = np_transform_points(field_matrix_inv, batch_world)
 
             # Search for Nearest Points (Up to k Points)
             k_use = min(k, len(field_points))
@@ -5943,7 +5954,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
             batch_displacements = np.sum(weighted_deltas, axis=1) * batch_weights[:, np.newaxis]
 
             # Calculate displacement in world space
-            world_displacements = np.array([field_matrix.to_3x3() @ Vector(v) for v in batch_displacements])
+            world_displacements = batch_displacements @ field_matrix_3x3.T
             step_displacements[start_idx:end_idx] = world_displacements
 
             # Update the current world position (for the next step)
@@ -5955,7 +5966,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
         print(f"Step {step_idx+1} Complete")
 
     # Return the final position after transformation
-    final_world_positions = np.array([target_matrix @ Vector(v) for v in vertices]) + cumulative_displacements
+    final_world_positions = np_transform_points(target_matrix, vertices) + cumulative_displacements
     return final_world_positions
 
 def batch_process_vertices(vertices, kdtree, field_points, delta_positions, field_weights,
@@ -5979,8 +5990,8 @@ def batch_process_vertices(vertices, kdtree, field_points, delta_positions, fiel
         batch_weights = deform_weights[start_idx:end_idx]
 
         # Convert all vertices in the batch to field space
-        batch_world = np.array([target_matrix @ Vector(v) for v in batch_vertices])
-        batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
+        batch_world = np_transform_points(target_matrix, batch_vertices)
+        batch_field = np_transform_points(field_matrix_inv, batch_world)
 
         # Search for Recent Contacts (Batch Processing)
         # distances, indices = kdtree.query(batch_field, k=int(k))
@@ -7726,8 +7737,8 @@ def batch_process_vertices_simple(vertices, kdtree, field_points, delta_position
         batch_vertices = vertices[start_idx:end_idx]
 
         # Convert all vertices in the batch to field space
-        batch_world = np.array([target_matrix @ Vector(v) for v in batch_vertices])
-        batch_field = np.array([field_matrix_inv @ Vector(v) for v in batch_world])
+        batch_world = np_transform_points(target_matrix, batch_vertices)
+        batch_field = np_transform_points(field_matrix_inv, batch_world)
 
         # Search for Recent Contacts (Batch Processing)
         distances, indices = kdtree.query(batch_field, k=64)
@@ -9181,7 +9192,7 @@ def apply_field_delta_with_rigid_transform_single(obj, field_data_path, blend_sh
     )
 
     # Convert to a numpy array
-    source_points = np.array([obj.matrix_world @ Vector(v) for v in current_positions])
+    source_points = np_transform_points(obj.matrix_world, current_positions)
     target_points = np.array(deformed_positions)
 
     # # DistanceWeight Get influence from vertex group
@@ -9670,7 +9681,7 @@ def process_blendshape_fields_with_rigid_transform(obj, field_data_path, base_av
                 # Create shape keys only when displacement exists
                 if has_displacement:
                     # Calculate similarity transformations from the source and transformed point clouds
-                    source_points = np.array([obj.matrix_world @ Vector(v) for v in deformed_vertices])
+                    source_points = np_transform_points(obj.matrix_world, deformed_vertices)
                     target_points = np.array(deformed_positions)
 
                     # # DistanceWeight Get influence from vertex group
