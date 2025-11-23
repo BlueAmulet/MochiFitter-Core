@@ -5796,7 +5796,7 @@ def batch_process_vertices_multi_step(vertices, all_field_points, all_delta_posi
         print(f"Number of field vertices used: {len(field_points)}")
 
         # Search for nearest points using KDTree (construct a new KDTree at each step)
-        kdtree = cKDTree(field_points)
+        kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
         # Calculate new vertex positions using custom RBF interpolation
         step_displacements = np.zeros((num_vertices, 3))
@@ -5927,7 +5927,7 @@ def batch_process_vertices_with_custom_range(vertices, all_field_points, all_del
                 delta_positions -= adjustment_delta
 
         # Searching for Nearest Points Using KDTree
-        kdtree = cKDTree(field_points)
+        kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
         # Calculate new vertex positions using custom RBF interpolation
         step_displacements = np.zeros((num_vertices, 3))
@@ -6826,7 +6826,7 @@ def get_deformation_field(field_data_path: str) -> dict:
             print(f"Warning: Could not process kdtree_query_k value: {e}")
 
     # Building a KDTree
-    kdtree = cKDTree(field_points)
+    kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
     field_info = {
         'data': data,
@@ -7797,7 +7797,7 @@ def process_field_deformation_simple(target_obj, field_data_path, blend_shape_la
     field_weights = data['weights']
     field_matrix = Matrix(data['world_matrix'])
     field_matrix_inv = field_matrix.inverted()
-    kdtree = cKDTree(field_points)
+    kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
     original_positions = np.array([v.co for v in eval_mesh.vertices])
 
@@ -10244,7 +10244,7 @@ def apply_bone_field_delta(armature_obj: bpy.types.Object, field_data_path: str,
         field_points = all_field_points[step]
         delta_positions = all_delta_positions[step]
         # Search for nearest points using KDTree (construct a new KDTree at each step)
-        kdtree = cKDTree(field_points)
+        kdtree = cKDTree(field_points, balanced_tree=False, compact_nodes=False)
 
         # Begin processing from Root Bone
         root_displacement = Vector((0, 0, 0))
