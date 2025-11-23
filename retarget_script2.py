@@ -6111,14 +6111,11 @@ def create_blendshape_mask(target_obj, mask_bones, clothing_avatar_data, field_n
     #print(f"target_bones: {target_bones}")
 
     # 各頂点のウェイトを計算
+    target_groups = {g.index for g in target_obj.vertex_groups if g.name in target_bones}
     for vert in target_obj.data.vertices:
-        for bone_name in target_bones:
-            if bone_name in target_obj.vertex_groups:
-                group = target_obj.vertex_groups[bone_name]
-                for g in vert.groups:
-                    if g.group == group.index:
-                        mask_weights[vert.index] += g.weight
-                        break
+        for g in vert.groups:
+            if g.group in target_groups:
+                mask_weights[vert.index] += g.weight
 
     # ウェイトを0-1の範囲にクランプ
     mask_weights = np.clip(mask_weights, 0.0, 1.0)
