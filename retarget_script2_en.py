@@ -1371,6 +1371,8 @@ def find_best_matching_target_settings(source_label: str,
         # If label is source_label, divide the difference by 1.5 to increase priority
         if label_without_id == source_label_without_id:
             difference = difference / 1.5
+        else:
+            difference = difference + 0.00001
 
         print(f"label: {label} difference: {difference}")
 
@@ -1691,7 +1693,7 @@ def parse_args():
                         pairs = args.mesh_renderers.split(';')
                         for pair in pairs:
                             if pair.strip():
-                                mesh_name, parent_name = pair.split(',', 1)
+                                mesh_name, parent_name = pair.split(':', 1)
                                 mesh_renderers[mesh_name.strip()] = parent_name.strip()
                         print(f"Parsed mesh renderers: {mesh_renderers}")
                     except ValueError as e:
@@ -1739,6 +1741,10 @@ def parse_args():
         for i in range(len(config_pairs) - 1):
             process_blendshape_transitions(config_pairs[i], config_pairs[i + 1])
         config_pairs[len(config_pairs) - 1]['next_blendshape_settings'] = config_pairs[len(config_pairs) - 1]['config_data'].get('targetBlendShapeSettings', [])
+
+    for i in range(len(config_pairs)):
+        if config_pairs[i].get('next_blendshape_settings', None):
+            print(f"config_pairs[{i}]['next_blendshape_settings']: {config_pairs[i]['next_blendshape_settings']}")
 
     # Store configuration pairs in args for later use
     args.config_pairs = config_pairs
@@ -2189,7 +2195,7 @@ def cleanup_base_objects(mesh_name: str) -> tuple:
         if obj != target_mesh and obj != target_armature:
             bpy.data.objects.remove(obj, do_unlink=True)
 
-    bpy.ops.object.mode_set(mode=original_mode)
+    #bpy.ops.object.mode_set(mode=original_mode)
 
     # Rename objects to specified names
     return rename_base_objects(target_mesh, target_armature)
@@ -2501,12 +2507,15 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
                     has_armature = True
                     break
 
-            if has_armature:
+            # Exclude meshes with 0 vertices
+            if has_armature and len(obj.data.vertices) > 0:
                 clothing_meshes.append(obj)
+            elif has_armature and len(obj.data.vertices) == 0:
+                print(f"Skipping mesh '{obj.name}': vertex count is 0")
 
     # Filtering: When target_meshes is specified, only the meshes contained within it are retained
     if target_meshes:
-        target_mesh_list = [name for name in target_meshes.split(',')]
+        target_mesh_list = [name for name in target_meshes.split(';')]
         print(f"Target mesh list: {target_mesh_list}")
         filtered_meshes = []
         for obj in clothing_meshes:
@@ -8847,7 +8856,11 @@ def apply_symmetric_field_delta(target_obj, field_data_path, blend_shape_labels=
                 clothing_blendshapes.add(blendshape["name"])
 
         # Processing for each shape key
-        for key_block in target_obj.data.shape_keys.key_blocks:
+
+        #Retrieve the list of shape keys in advance to avoid infinite loops
+        current_shape_key_blocks = [key_block for key_block in target_obj.data.shape_keys.key_blocks]
+
+        for key_block in current_shape_key_blocks:
             if (key_block.name == "Basis" or
                 key_block.name in clothing_blendshapes or
                 key_block == shape_key or
@@ -9461,8 +9474,11 @@ def apply_field_delta_with_rigid_transform(obj, field_data_path, blend_shape_lab
             for blendshape in clothing_avatar_data["blendshapes"]:
                 clothing_blendshapes.add(blendshape["name"])
 
+        # Retrieve the list of shape keys in advance to avoid infinite loops
+        current_shape_key_blocks = [key_block for key_block in obj.data.shape_keys.key_blocks]
+
         # Processing for each shape key
-        for key_block in obj.data.shape_keys.key_blocks:
+        for key_block in current_shape_key_blocks:
             if (key_block.name == "Basis" or
                 key_block.name in clothing_blendshapes or
                 key_block == shape_key or
@@ -9480,7 +9496,9 @@ def apply_field_delta_with_rigid_transform(obj, field_data_path, blend_shape_lab
             if temp_blend_shape_key_name in obj.data.shape_keys.key_blocks:
                 temp_shape_key = obj.data.shape_keys.key_blocks[temp_blend_shape_key_name]
             else:
+                print(f"Creating new shape key: {temp_blend_shape_key_name}")
                 temp_shape_key = obj.shape_key_add(name=temp_blend_shape_key_name)
+                print(f"temp_shape_key name: {temp_shape_key.name}")
             for i, vertex in enumerate(temp_shape_key.data):
                 vertex.co = key_block.data[i].co.copy()
 
@@ -14312,6 +14330,7 @@ def apply_modifiers_keep_shapekeys_with_temp(obj):
 
     shape_keys = obj.data.shape_keys.key_blocks
     temp_objects = []
+    shape_key_names = []  # List to store the original shape key names
 
     # Create a temporary object for each shape key
     for i, shape_key in enumerate(shape_keys):
@@ -14326,10 +14345,11 @@ def apply_modifiers_keep_shapekeys_with_temp(obj):
         bpy.ops.object.duplicate(linked=False)
         temp_obj = bpy.context.active_object
 
-        temp_obj.name = f"t{apply_modifiers_keep_shapekeys_with_temp.counter}:{shape_key.name}"
+        temp_obj.name = f"t{apply_modifiers_keep_shapekeys_with_temp.counter}"
         apply_modifiers_keep_shapekeys_with_temp.counter += 1
 
         temp_objects.append(temp_obj)
+        shape_key_names.append(shape_key.name)  # Save the original name
 
         # Set the values of other shape keys to 0 and the target shape key's value to 1
         for sk in temp_obj.data.shape_keys.key_blocks:
@@ -14356,9 +14376,9 @@ def apply_modifiers_keep_shapekeys_with_temp(obj):
 
     # Add the shape of the temporary object as a shape key for the original object
     obj.shape_key_add(name="Basis")
-    for temp_obj in temp_objects:
-        # Add a shape key
-        shape_key = obj.shape_key_add(name=temp_obj.name.split(':')[-1])
+    for temp_obj, original_name in zip(temp_objects, shape_key_names):
+        # Add a shape key (use the original name)
+        shape_key = obj.shape_key_add(name=original_name)
         shape_key.interpolation = 'KEY_LINEAR'
         if shape_key.name == "SymmetricDeformed":
             shape_key.value = 1.0
@@ -17825,6 +17845,62 @@ def rename_shape_keys_from_mappings(meshes, blend_shape_mappings):
             shape_key.name = new_name
             print(f"Renamed shape key: {old_name} -> {new_name} on mesh {obj.name}")
 
+def truncate_long_shape_key_names(clothing_meshes, clothing_avatar_data):
+    """
+    For shape keys not included in clothing_avatar_data["blendshapes"]
+    Truncate names longer than 48 bytes to 48 bytes (UTF-8 encoded)
+    Handle cases to avoid cutting multibyte characters in half
+
+    Parameters:
+        clothing_meshes: List of mesh objects
+        clothing_avatar_data: Clothing avatar data (includes blendshape information)
+    """
+    if not clothing_avatar_data or 'blendshapes' not in clothing_avatar_data:
+        return
+
+    # Create a set of names included in clothing_avatar_data’s blendshapes
+    blendshape_names = set()
+    for blendshape in clothing_avatar_data.get('blendshapes', []):
+        if isinstance(blendshape, dict) and 'name' in blendshape:
+            blendshape_names.add(blendshape['name'])
+
+    for obj in clothing_meshes:
+        if not obj.data.shape_keys:
+            continue
+
+        # Collect shape keys that need to be renamed
+        keys_to_rename = []
+        for shape_key in obj.data.shape_keys.key_blocks:
+            # If not included in clothing_avatar_data["blendshapes"] and 48 bytes or longer
+            if shape_key.name not in blendshape_names:
+                # Check UTF-8 byte length
+                name_bytes = shape_key.name.encode('utf-8')
+                if len(name_bytes) >= 48:
+                    # Truncate to 48 bytes considering multibyte characters
+                    truncated_bytes = name_bytes[:48]
+                    # Remove incomplete multibyte characters
+                    try:
+                        truncated_name = truncated_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        # If the byte sequence is incomplete, trim one byte at a time and retry
+                        for i in range(1, 4):  # UTF-8 uses up to 4 bytes per character
+                            try:
+                                truncated_name = truncated_bytes[:-i].decode('utf-8')
+                                break
+                            except UnicodeDecodeError:
+                                continue
+                        else:
+                            # If it still fails, use the original name (should not normally occur)
+                            truncated_name = shape_key.name
+
+                    keys_to_rename.append((shape_key, truncated_name))
+
+        # Change name
+        for shape_key, truncated_name in keys_to_rename:
+            old_name = shape_key.name
+            shape_key.name = truncated_name
+            print(f"Truncated shape key name: {old_name} -> {truncated_name} on mesh {obj.name}")
+
 def merge_and_clean_generated_shapekeys(clothing_meshes, blend_shape_labels=None):
     """
     Delete the shape keys created by apply_blendshape_deformation_fields,
@@ -18391,6 +18467,9 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         if config_pair.get('blend_shape_mappings'):
             rename_shape_keys_from_mappings(clothing_meshes, config_pair['blend_shape_mappings'])
 
+        # Truncate long shape key names not included in clothing_avatar_data’s blendshapes to 53 characters
+        truncate_long_shape_key_names(clothing_meshes, clothing_avatar_data)
+
         clothing_process_time = time.time()
         print(f"Clothing data processing: {clothing_process_time - base_load_time:.2f} seconds")
 
@@ -18445,7 +18524,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         remove_empty_vertex_groups(base_mesh)
 
         # Apply bone name conversion if provided
-        if hasattr(args, 'name_conv') and args.name_conv:
+        if pair_index == 0 and hasattr(args, 'name_conv') and args.name_conv:
             try:
                 with open(args.name_conv, 'r', encoding='utf-8') as f:
                     name_conv_data = json.load(f)
@@ -18875,6 +18954,8 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         cycle2_pre_end = time.time()
         print(f"Cycle 2 preprocessing total: {cycle2_pre_end - cycle2_pre_start:.2f} seconds")
 
+        print(f"config_pair.get('next_blendshape_settings', []): {config_pair.get('next_blendshape_settings', [])}")
+
         # Weight Transfer Processing (Considering Inclusion Relationships)
         print("Status: Cycle 2 Weight Transfer in Progress")
         print(f"Progress: {(pair_index + 0.6) / total_pairs * 0.9:.3f}")
@@ -19114,7 +19195,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print(f"FBX Export: {export_end - export_start:.2f} seconds")
 
         # Save the current scene
-        # if pair_index == 0:
+        # if pair_index == 1:
         #     save_start = time.time()
         #     output_blend = args.output.rsplit('.', 1)[0] + '.blend'
         #     bpy.ops.wm.save_as_mainfile(filepath=output_blend)
