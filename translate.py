@@ -19,8 +19,9 @@ with open('retarget_script2.py', 'r', encoding='utf-8') as f:
     with open('retarget_script2_en.py', 'w', encoding='utf-8', newline='\n') as of:
         for line in f:
             if cjk_match.search(line):
+                oline = line.rstrip()
                 for orig, trans in translations:
                     line = line.replace(orig, trans)
                 if cjk_match.search(line):
-                    print(f'Warning: Japanese text still found: {line}')
+                    print(f'Warning: Japanese text still found: {oline}')
             of.write(line)
