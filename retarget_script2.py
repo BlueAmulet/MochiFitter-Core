@@ -5138,7 +5138,7 @@ def process_bone_weight_consolidation(mesh_obj: bpy.types.Object, avatar_data: d
                 print(f"Merged {toe_bone} weights to {right_foot_bone} in {mesh_obj.name}")
 
 
-def get_deformation_bone_groups(avatar_data: dict) -> list:
+def get_deformation_bone_groups(avatar_data: dict) -> set:
     """
     Get list of bone groups for deformation mask from avatar data,
     excluding Head and its auxiliary bones.
@@ -5166,7 +5166,7 @@ def get_deformation_bone_groups(avatar_data: dict) -> list:
             aux_bones = aux_set["auxiliaryBones"]
             bone_groups.update(aux_bones)
 
-    return sorted(list(bone_groups))
+    return bone_groups
 
 def create_deformation_mask(obj: bpy.types.Object, avatar_data: dict) -> None:
     """
@@ -5183,6 +5183,7 @@ def create_deformation_mask(obj: bpy.types.Object, avatar_data: dict) -> None:
 
     # Get bone groups from avatar data
     group_names = get_deformation_bone_groups(avatar_data)
+    available_groups = {g.index for g in obj.vertex_groups if g.name in group_names}
 
     # TransferMaskという名前の頂点グループがすでに存在する場合は削除
     if "DeformationMask" in obj.vertex_groups:
@@ -5193,27 +5194,14 @@ def create_deformation_mask(obj: bpy.types.Object, avatar_data: dict) -> None:
 
     # 各頂点をチェック
     for vert in obj.data.vertices:
-        should_add = False
         weight_sum = 0.0
-        # 指定された頂点グループのウェイトをチェック
-        for group_name in group_names:
-            try:
-                group = obj.vertex_groups[group_name]
+        for g in vert.groups:
+            if g.group in available_groups:
                 # その頂点のウェイト値を取得
-                weight = 0
-                for g in vert.groups:
-                    if g.group == group.index:
-                        weight = g.weight
-                # ウェイトが0より大きければフラグを立てる
-                if weight > 0:
-                    should_add = True
-                    weight_sum += weight
-            except KeyError:
-                # 頂点グループが存在しない場合はスキップ
-                continue
+                weight_sum += g.weight
 
         # フラグが立っている場合、DeformationMaskグループに頂点を追加
-        if should_add:
+        if weight_sum > 0:
             deformation_mask.add([vert.index], weight_sum, 'REPLACE')
 
 
