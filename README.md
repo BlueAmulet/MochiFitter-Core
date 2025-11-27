@@ -2,6 +2,12 @@
 
 This repository hosts an unofficial derivative of the **MochiFitter / もちふぃった~** project created by **Nine Gates**. It is based on the publicly released GPLv3-licensed core and is provided entirely without affiliation, approval, or endorsement from the original creator.
 
+## Usage
+
+In your Unity project, locate the `BlenderTools\blender-4.0.2-windows-x64\dev` folder and replace the retarget_script2.py with the one from this repository, making sure to match the original name of the script.  
+This folder is located outside of the Assets folder. You can get to it from ALCOM/VCC by clicking the three dots next to your project, and clicking "Open Project Directory."  
+To revert back to the original script, delete and let **MochiFitter** redownload the script.
+
 ## Overview
 
 This project focuses on two primary areas:
