@@ -15343,7 +15343,10 @@ def apply_smoothing_to_vertex_group(cloth_obj, vertex_group_name, smoothing_radi
     if neighbors_cache is None:
         # cKDTreeを使用して近傍検索を効率化
         kdtree = cKDTree(vertex_coords)
-        neighbors_cache = [np.array(x) for x in kdtree.query_ball_point(vertex_coords, smoothing_radius)]
+        neighbors_cache = [None] * num_vertices
+        dtype = np.int32 if num_vertices < 2**31 else np.int64
+        for i in range(num_vertices):
+            neighbors_cache[i] = np.array(kdtree.query_ball_point(vertex_coords[i], smoothing_radius), dtype=dtype)
 
     for iteration_idx in range(iteration):
         # 各頂点に対してスムージングを適用
