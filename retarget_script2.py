@@ -685,9 +685,11 @@ import numpy as np
 import argparse
 import sys
 import re
+import subprocess
+import tempfile
 from mathutils import Matrix, Vector, Euler
 from mathutils.kdtree import KDTree
-from typing import Dict, Optional, Tuple, Set
+from typing import Dict, Optional, Tuple, Set, List, Any
 from scipy.spatial import cKDTree
 import bmesh
 from mathutils.bvhtree import BVHTree
@@ -703,6 +705,56 @@ _saved_pose_state = None
 _previous_pose_state = None
 
 _is_A_pose = False
+
+_unity_script_directory = None
+
+
+def apply_y_rotation_to_bone(armature_obj: bpy.types.Object, bone_name: str, rotation_degrees: float) -> None:
+    """
+    指定されたアーマチュアの特定のボーンにY軸回転を適用する
+
+    Parameters:
+        armature_obj: アーマチュアオブジェクト
+        bone_name: ボーン名
+        rotation_degrees: Y軸回転角度（度数法）
+    """
+    if bone_name and bone_name in armature_obj.pose.bones:
+        bone = armature_obj.pose.bones[bone_name]
+        current_world_matrix = armature_obj.matrix_world @ bone.matrix
+        # グローバル座標系でY軸回転を適用
+        head_world_transformed = armature_obj.matrix_world @ bone.head
+        offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
+        rotation_matrix = mathutils.Matrix.Rotation(math.radians(rotation_degrees), 4, 'Y')
+        bone.matrix = armature_obj.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
+
+
+def apply_y_rotation_to_leg_bones(armature: bpy.types.Object,
+                                   avatar_data: dict,
+                                   left_rotation_degrees: float,
+                                   right_rotation_degrees: float) -> None:
+    """
+    テンプレートと衣装のアーマチュアのLeftUpperLegとRightUpperLegボーンにY軸回転を適用する
+
+    Parameters:
+        armature: アーマチュアオブジェクト
+        avatar_data: アバターデータ（humanoidBonesを含む）
+        left_rotation_degrees: LeftUpperLegボーンの回転角度（度数法）
+        right_rotation_degrees: RightUpperLegボーンの回転角度（度数法）
+    """
+    # humanoidBonesからLeftUpperLegとRightUpperLegのboneNameを取得
+    left_upper_leg_bone = None
+    right_upper_leg_bone = None
+
+    for bone_map in avatar_data.get("humanoidBones", []):
+        if bone_map.get("humanoidBoneName") == "LeftUpperLeg":
+            left_upper_leg_bone = bone_map.get("boneName")
+        elif bone_map.get("humanoidBoneName") == "RightUpperLeg":
+            right_upper_leg_bone = bone_map.get("boneName")
+
+    # 各アーマチュアの各ボーンに回転を適用
+    apply_y_rotation_to_bone(armature, left_upper_leg_bone, left_rotation_degrees)
+    apply_y_rotation_to_bone(armature, right_upper_leg_bone, right_rotation_degrees)
+
 
 def save_pose_state(armature_obj: bpy.types.Object) -> dict:
     """
@@ -1509,17 +1561,17 @@ def parse_args():
     parser.add_argument('--input', required=True, help='Input clothing FBX file path')
     parser.add_argument('--output', required=True, help='Output FBX file path')
     parser.add_argument('--base', required=True, help='Base Blender file path')
-    parser.add_argument('--base-fbx', required=True, help='Comma-separated list of base avatar FBX file paths')
-    parser.add_argument('--config', required=True, help='Comma-separated list of config file paths')
+    parser.add_argument('--base-fbx', required=True, help='Semicolon-separated list of base avatar FBX file paths')
+    parser.add_argument('--config', required=True, help='Semicolon-separated list of config file paths')
     parser.add_argument('--hips-position', type=str, help='Target Hips bone world position (x,y,z format)')
-    parser.add_argument('--blend-shapes', type=str, help='Comma-separated list of blend shape labels to apply')
+    parser.add_argument('--blend-shapes', type=str, help='Semicolon-separated list of blend shape labels to apply')
     parser.add_argument('--cloth-metadata', type=str, help='Path to cloth metadata JSON file')
     parser.add_argument('--mesh-material-data', type=str, help='Path to mesh material data JSON file')
     parser.add_argument('--init-pose', required=True, help='Initial pose data JSON file path')
-    parser.add_argument('--target-meshes', required=False, help='Comma-separated list of mesh names to process')
+    parser.add_argument('--target-meshes', required=False, help='Semicolon-separated list of mesh names to process')
     parser.add_argument('--no-subdivision', action='store_true', help='Disable subdivision during DeformationField deformation')
     parser.add_argument('--no-triangle', action='store_true', help='Disable mesh triangulation')
-    parser.add_argument('--blend-shape-values', type=str, help='Comma-separated list of float values for blend shape intensities')
+    parser.add_argument('--blend-shape-values', type=str, help='Semicolon-separated list of float values for blend shape intensities')
     parser.add_argument('--blend-shape-mappings', type=str, help='Semicolon-separated mappings of label,customName pairs')
     parser.add_argument('--name-conv', type=str, help='Path to bone name conversion JSON file')
     parser.add_argument('--mesh-renderers', type=str, help='Semicolon-separated list of meshObject,parentObject pairs')
@@ -1534,9 +1586,9 @@ def parse_args():
 
     args = parser.parse_args(argv[argv.index("--") + 1:])
 
-    # Parse comma-separated base-fbx and config paths
-    base_fbx_paths = [path.strip() for path in args.base_fbx.split(',')]
-    config_paths = [path.strip() for path in args.config.split(',')]
+    # Parse semicolon-separated base-fbx and config paths
+    base_fbx_paths = [path.strip() for path in args.base_fbx.split(';')]
+    config_paths = [path.strip() for path in args.config.split(';')]
 
     # Validate that base-fbx and config have the same number of entries
     if len(base_fbx_paths) != len(config_paths):
@@ -1609,6 +1661,9 @@ def parse_args():
             # Get config file directory
             config_dir = os.path.dirname(os.path.abspath(config_path))
 
+            global _unity_script_directory
+            _unity_script_directory = config_dir
+
             # Extract and resolve avatar data paths
             pose_data_path = config_data.get('poseDataPath')
             field_data_path = config_data.get('fieldDataPath')
@@ -1670,7 +1725,7 @@ def parse_args():
                 # Parse blend shape values if provided
                 if args.blend_shape_values:
                     try:
-                        blend_shape_values = [float(v.strip()) for v in args.blend_shape_values.split(',')]
+                        blend_shape_values = [float(v.strip()) for v in args.blend_shape_values.split(';')]
                     except ValueError as e:
                         print(f"Error: Invalid blend shape values format: {e}")
                         sys.exit(1)
@@ -2442,7 +2497,27 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
     original_active = bpy.context.view_layer.objects.active
 
     # Import clothing FBX
-    bpy.ops.import_scene.fbx(filepath=input_fbx, use_anim=False)
+    bpy.ops.import_scene.fbx(filepath=input_fbx, use_anim=True)
+
+    # フレーム0の状態を維持してアニメーションを削除
+    def remove_animations_keeping_frame0():
+        """フレーム0の状態を維持しながらすべてのアニメーションを削除する"""
+        # フレーム0に設定
+        bpy.context.scene.frame_set(0)
+
+        # すべてのオブジェクトからアニメーションデータを削除
+        for obj in bpy.data.objects:
+            if obj.animation_data:
+                obj.animation_data_clear()
+
+        # 未使用のアクションを削除
+        for action in bpy.data.actions:
+            if action.users == 0:
+                bpy.data.actions.remove(action)
+
+        print("Removed all animations while keeping frame 0 pose")
+
+    remove_animations_keeping_frame0()
 
     # 非アクティブなオブジェクトとその子を削除
     def remove_inactive_objects():
@@ -2486,17 +2561,7 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
     with open(clothing_avatar_data_path, 'r', encoding='utf-8') as f:
         clothing_avatar_data = json.load(f)
 
-    # Find clothing armature
-    clothing_armature = None
-    for obj in bpy.data.objects:
-        if obj.type == 'ARMATURE' and obj.name != "Armature.BaseAvatar":
-            clothing_armature = obj
-            break
-
-    if not clothing_armature:
-        raise Exception("Clothing armature not found")
-
-    # Find clothing meshes
+    # Find clothing meshes (まずメッシュを取得してから、適切なArmatureを決定する)
     clothing_meshes = []
     for obj in bpy.data.objects:
         if obj.type == 'MESH' and obj.name != "Body.BaseAvatar" and obj.name != "Body.BaseAvatar.RightOnly" and obj.name != "Body.BaseAvatar.LeftOnly":
@@ -2512,6 +2577,63 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
                 clothing_meshes.append(obj)
             elif has_armature and len(obj.data.vertices) == 0:
                 print(f"Skipping mesh '{obj.name}': vertex count is 0")
+
+    # Find clothing armature (メッシュのArmatureモディファイアから適切なものを選択)
+    # メッシュが参照しているArmatureを収集
+    armatures_from_meshes = set()
+    for obj in clothing_meshes:
+        for modifier in obj.modifiers:
+            if modifier.type == 'ARMATURE' and modifier.object is not None:
+                if modifier.object.name != "Armature.BaseAvatar":
+                    armatures_from_meshes.add(modifier.object)
+
+    if not armatures_from_meshes:
+        raise Exception("Clothing armature not found in mesh modifiers")
+
+    # 複数のArmatureが存在する場合、humanoid/auxiliaryボーンとの一致数が最も多いものを選択
+    if len(armatures_from_meshes) > 1:
+        print(f"Multiple armatures found: {[arm.name for arm in armatures_from_meshes]}")
+        humanoid_and_aux_bones = get_humanoid_and_auxiliary_bones(clothing_avatar_data)
+
+        best_armature = None
+        best_match_count = -1
+
+        for armature in armatures_from_meshes:
+            match_count = 0
+            for bone in armature.data.bones:
+                if bone.name in humanoid_and_aux_bones:
+                    match_count += 1
+
+            print(f"Armature '{armature.name}': {match_count} matching bones")
+
+            if match_count > best_match_count:
+                best_match_count = match_count
+                best_armature = armature
+
+        clothing_armature = best_armature
+        print(f"Selected armature: '{clothing_armature.name}' with {best_match_count} matching bones")
+
+        # clothing_armatureが指定されていないメッシュをclothing_meshesから除外
+        filtered_meshes = []
+        for obj in clothing_meshes:
+            is_using_selected_armature = False
+            for modifier in obj.modifiers:
+                if modifier.type == 'ARMATURE' and modifier.object == clothing_armature:
+                    is_using_selected_armature = True
+                    break
+
+            if is_using_selected_armature:
+                filtered_meshes.append(obj)
+            else:
+                print(f"Excluding mesh '{obj.name}' as it does not use the selected armature")
+
+        clothing_meshes = filtered_meshes
+    else:
+        clothing_armature = list(armatures_from_meshes)[0]
+        print(f"Single armature found: '{clothing_armature.name}'")
+
+    if not clothing_armature:
+        raise Exception("Clothing armature not found")
 
     # フィルタリング: target_meshesが指定されている場合、それに含まれるメッシュのみを保持
     if target_meshes:
@@ -3145,7 +3267,7 @@ def add_clothing_pose_from_json(armature_obj, pose_filepath="pose_data.json", in
 
     # 初期ポーズの適用（新しい独立した関数を使用）
     if init_pose_filepath:
-        apply_initial_pose_to_armature(armature_obj, init_pose_filepath, clothing_avatar_data_filepath)
+        apply_initial_pose_to_armature(init_pose_filepath)
 
     # 処理済みのHumanoidボーンを記録する辞書
     processed_bones = {}
@@ -3450,149 +3572,179 @@ def normalize_clothing_bone_names(clothing_armature: bpy.types.Object, clothing_
 
     print("Bone name normalization completed")
 
-def apply_initial_pose_to_armature(armature_obj, init_pose_filepath, clothing_avatar_data_filepath):
+def apply_initial_pose_to_armature(init_pose_filepath, target_armature_obj = None):
     """
-    Apply initial pose from JSON to the armature.
+    Apply initial pose from JSON to the armatures.
+    Reads initial_pose.json, finds mesh objects by meshName, gets their Armature modifiers,
+    and applies delta_matrix to each armature from root to leaf based on the armature's bone hierarchy.
 
     Parameters:
-        armature_obj: Target armature object
         init_pose_filepath: Path to initial pose JSON file
-        clothing_avatar_data_filepath: Path to avatar data JSON file
+        armature_obj: Target armature object (optional)
     """
     if not init_pose_filepath or not os.path.exists(init_pose_filepath):
         return
 
-    # アバターデータを読み込む
-    avatar_data = load_avatar_data(clothing_avatar_data_filepath)
+    bpy.ops.object.mode_set(mode='OBJECT')
 
-    # 階層関係と変換マップを取得
-    bone_parents, humanoid_to_bone, bone_to_humanoid = get_humanoid_bone_hierarchy(avatar_data)
-
-    # 親から子への順序でHumanoidボーンを取得
-    def get_bone_hierarchy_order():
-        order = []
-        visited = set()
-
-        def add_bone_and_children(humanoid_bone):
-            if humanoid_bone in visited:
-                return
-            visited.add(humanoid_bone)
-            order.append(humanoid_bone)
-
-            # 子ボーンを検索
-            for child_bone, parent_bone in bone_parents.items():
-                if parent_bone == humanoid_bone and child_bone not in visited:
-                    add_bone_and_children(child_bone)
-
-        # ルートボーン（Hips）から開始
-        root_bones = []
-        root_bones.append(humanoid_to_bone['Hips'])
-
-        for root_bone in root_bones:
-            add_bone_and_children(root_bone)
-
-        return order
-
-    bone_order = get_bone_hierarchy_order()
-
-    # 初期ポーズの適用
+    # 初期ポーズデータを読み込む
     with open(init_pose_filepath, 'r', encoding='utf-8') as f:
         init_pose_data = json.load(f)
 
-    # ボーン名をキーとしたマッピングを作成
-    bone_transforms = {}
-    for bone_data in init_pose_data.get("bones", []):
-        bone_name = bone_data["boneName"]
-        transform = bone_data["transform"]
-        bone_transforms[bone_name] = transform
+    # メッシュ名とArmatureオブジェクトのマッピングを作成
+    mesh_to_armature = {}
+    mesh_to_bones_data = {}
 
-    # 処理済みのHumanoidボーンを記録する辞書
-    processed_bones = {}
+    # JSONファイルから全ボーンのリストを取得
+    all_bones = init_pose_data.get("bones", [])
 
-    # 事前にすべてのボーンの変形前の状態を保存
-    original_bone_data = {}
-    for bone_name in bone_order:
-        if bone_name and bone_name in armature_obj.pose.bones:
+    # 各ボーンを処理
+    for bone_entry in all_bones:
+        bone_name = bone_entry.get("boneName")
+        transform = bone_entry.get("transform")
+        mesh_name = bone_entry.get("meshName")
+
+        if not bone_name or not transform or not mesh_name:
+            continue
+
+        # シーンからmeshNameと一致するメッシュオブジェクトを探す
+        mesh_obj = None
+        for obj in bpy.context.scene.objects:
+            if obj.type == 'MESH' and obj.name == mesh_name:
+                mesh_obj = obj
+                break
+
+        if not mesh_obj:
+            # 警告は最初の1回だけ表示するため、メッシュ名をチェック
+            if mesh_name not in mesh_to_armature and mesh_name not in [key for key in mesh_to_armature.keys()]:
+                print(f"警告: メッシュ '{mesh_name}' が見つかりません")
+            continue
+
+        # Armatureモディファイアを探す
+        armature_modifier = None
+        for modifier in mesh_obj.modifiers:
+            if modifier.type == 'ARMATURE' and modifier.object:
+                armature_modifier = modifier
+                break
+
+        if not armature_modifier or not armature_modifier.object:
+            if mesh_name not in mesh_to_armature:
+                print(f"警告: メッシュ '{mesh_name}' にArmatureモディファイアが見つかりません")
+            continue
+
+        armature = armature_modifier.object
+
+        # Armatureとボーンデータを記録
+        if armature not in mesh_to_bones_data:
+            mesh_to_armature[mesh_name] = armature
+            mesh_to_bones_data[armature] = []
+
+        # このボーンのデータを記録
+        mesh_to_bones_data[armature].append({
+            "boneName": bone_name,
+            "transform": transform
+        })
+
+    # 各Armatureオブジェクトに対して処理
+    for armature_obj, bones_data_list in mesh_to_bones_data.items():
+
+        if target_armature_obj is not None and target_armature_obj != armature_obj:
+            continue
+
+        # Armatureのボーン階層から親から子への順序を取得
+        def get_bone_hierarchy_order_from_armature(armature):
+            order = []
+            visited = set()
+
+            def add_bone_and_children(bone):
+                if bone.name in visited:
+                    return
+                visited.add(bone.name)
+                order.append(bone.name)
+
+                # 子ボーンを追加
+                for child_bone in bone.children:
+                    if child_bone.name not in visited:
+                        add_bone_and_children(child_bone)
+
+            # ルートボーン（親がないボーン）から開始
+            for bone in armature.data.bones:
+                if bone.parent is None:
+                    add_bone_and_children(bone)
+
+            return order
+
+        bone_order = get_bone_hierarchy_order_from_armature(armature_obj)
+
+        # ボーン名をキーとしたマッピングを作成
+        bone_transforms = {}
+        for bone_data in bones_data_list:
+            bone_name = bone_data.get("boneName")
+            transform = bone_data.get("transform")
+            if bone_name and transform:
+                bone_transforms[bone_name] = transform
+
+        # 処理済みのHumanoidボーンを記録する辞書
+        processed_bones = {}
+
+        # 事前にすべてのボーンの変形前の状態を保存
+        original_bone_data = {}
+        for bone_name in bone_order:
+            if bone_name and bone_name in armature_obj.pose.bones:
+                bone = armature_obj.pose.bones[bone_name]
+                original_bone_data[bone_name] = {
+                    'matrix': bone.matrix.copy(),
+                    'head': bone.head.copy(),
+                    'tail': bone.tail.copy(),
+                }
+
+        # アーマチュアの各ボーンに初期ポーズを適用（ルートから末端へ）
+        for bone_name in bone_order:
+            if not bone_name or bone_name not in armature_obj.pose.bones:
+                continue
+
+            # 既に処理済みの場合はスキップ
+            if bone_name in processed_bones:
+                continue
+
+            # 保存されたオリジナルデータを使用して計算
+            if bone_name not in original_bone_data:
+                continue
+
+            if bone_name not in bone_transforms:
+                continue
+
             bone = armature_obj.pose.bones[bone_name]
-            original_bone_data[bone_name] = {
-                'matrix': bone.matrix.copy(),
-                'head': bone.head.copy(),
-                'tail': bone.tail.copy(),
-            }
 
-    # アーマチュアの各ボーンに初期ポーズを適用
-    for bone_name in bone_order:
-        if not bone_name or bone_name not in armature_obj.pose.bones:
-            continue
+            original_data = original_bone_data[bone_name]
 
-        # 既に処理済みの場合はスキップ
-        if bone_name in processed_bones:
-            continue
+            # 現在のワールド空間での行列を取得（オリジナルデータを使用）
+            current_world_matrix = armature_obj.matrix_world @ original_data['matrix']
 
-        # 保存されたオリジナルデータを使用して計算
-        if bone_name not in original_bone_data:
-            continue
+            transform = bone_transforms[bone_name]
 
-        if bone_name not in bone_transforms:
-            continue
+            # delta_matrixが存在するかチェック
+            if "delta_matrix" in transform:
+                # 差分変換行列を取得
+                delta_matrix = list_to_matrix(transform['delta_matrix'])
 
-        bone = armature_obj.pose.bones[bone_name]
+                # 現在の行列に適用
+                combined_matrix = delta_matrix @ current_world_matrix
 
-        original_data = original_bone_data[bone_name]
+                # ローカル空間に変換して適用
+                bone.matrix = armature_obj.matrix_world.inverted() @ combined_matrix
 
-        # 現在のワールド空間での行列を取得（オリジナルデータを使用）
-        current_world_matrix = armature_obj.matrix_world @ original_data['matrix']
+                print(f"Applied initial pose to bone: {bone_name}")
+                print(f"delta_matrix: {delta_matrix}")
 
-        transform = bone_transforms[bone_name]
+            # 変更を即座に反映（子ボーンの計算に影響するため）
+            bpy.context.view_layer.update()
 
-        # delta_matrixが存在するかチェック
-        if "delta_matrix" in transform:
-            # 差分変換行列を取得
-            delta_matrix = list_to_matrix(transform['delta_matrix'])
+            # 処理済みとしてマーク
+            processed_bones[bone_name] = True
 
-            # 現在の行列に適用
-            combined_matrix = delta_matrix @ current_world_matrix
-
-            # ローカル空間に変換して適用
-            bone.matrix = armature_obj.matrix_world.inverted() @ combined_matrix
-        else:
-            # 後方互換性のため、古い形式（position, rotation, scale）もサポート
-            # 位置を設定
-            pos = transform.get("position", [0, 0, 0])
-            init_loc = Vector((pos[0], pos[1], pos[2]))
-
-            # 回転を設定（度数からラジアンに変換）
-            rot = transform.get("rotation", [0, 0, 0])
-            init_rot = Euler([math.radians(r) for r in rot], 'XYZ')
-
-            # スケールを設定
-            scale = transform.get("scale", [1, 1, 1])
-            init_scale = Vector((scale[0], scale[1], scale[2]))
-
-            head_world = armature_obj.matrix_world @ bone.head
-            offset_matrix = Matrix.Translation(head_world)
-
-            # 新しい行列を作成
-            delta_matrix = Matrix.Translation(init_loc) @ \
-                        init_rot.to_matrix().to_4x4() @ \
-                        Matrix.Scale(init_scale.x, 4, (1, 0, 0)) @ \
-                        Matrix.Scale(init_scale.y, 4, (0, 1, 0)) @ \
-                        Matrix.Scale(init_scale.z, 4, (0, 0, 1))
-
-            # 現在の行列に加算
-            combined_matrix = offset_matrix @ delta_matrix @ offset_matrix.inverted() @ current_world_matrix
-
-            # ローカル空間に変換して適用
-            bone.matrix = armature_obj.matrix_world.inverted() @ combined_matrix
-
-        # 変更を即座に反映（子ボーンの計算に影響するため）
+        # ビューを更新
         bpy.context.view_layer.update()
-
-        # 処理済みとしてマーク
-        processed_bones[bone_name] = True
-
-    # ビューを更新
-    bpy.context.view_layer.update()
 
 def is_A_pose(avatar_data: dict, armature: bpy.types.Object, init_pose_filepath=None, pose_filepath=None, clothing_avatar_data_filepath=None) -> bool:
     """
@@ -3626,7 +3778,7 @@ def is_A_pose(avatar_data: dict, armature: bpy.types.Object, init_pose_filepath=
     try:
         # 初期ポーズを適用
         if init_pose_filepath and clothing_avatar_data_filepath:
-            apply_initial_pose_to_armature(temp_armature, init_pose_filepath, clothing_avatar_data_filepath)
+            apply_initial_pose_to_armature(init_pose_filepath, temp_armature)
 
         if pose_filepath and clothing_avatar_data_filepath:
             with open(clothing_avatar_data_filepath, 'r', encoding='utf-8') as f:
@@ -3690,7 +3842,7 @@ def is_A_pose(avatar_data: dict, armature: bpy.types.Object, init_pose_filepath=
 
     return result
 
-def generate_temp_shapekeys_for_weight_transfer(obj: bpy.types.Object, armature_obj: bpy.types.Object, avatar_data: dict, is_A_pose: bool) -> None:
+def generate_temp_shapekeys_for_weight_transfer(obj: bpy.types.Object, armature_obj: bpy.types.Object, avatar_data: dict, base_armature: bpy.types.Object, base_avatar_data: dict, is_A_pose: bool) -> None:
     """
     Generate temp shapekeys for weight transfer.
     """
@@ -3699,12 +3851,13 @@ def generate_temp_shapekeys_for_weight_transfer(obj: bpy.types.Object, armature_
 
     set_armature_modifier_visibility(obj, True, True)
 
-    for sk in obj.data.shape_keys.key_blocks:
-        if sk.name != "Basis":
-            if sk.name == "SymmetricDeformed":
-                sk.value = 1.0
-            else:
-                sk.value = 0.0
+    if obj.data.shape_keys:
+        for sk in obj.data.shape_keys.key_blocks:
+            if sk.name != "Basis":
+                if sk.name == "SymmetricDeformed":
+                    sk.value = 1.0
+                else:
+                    sk.value = 0.0
 
     A_pose_shape_verts = None
     crotch_shape_verts = None
@@ -3757,15 +3910,33 @@ def generate_temp_shapekeys_for_weight_transfer(obj: bpy.types.Object, armature_
             elif humanoid_name in right_arm_humanoid_names:
                 right_arm_bones.append(bone_name)
 
-        # LeftUpperArmのheadを起点として取得
-        left_pivot_point = None
-        if left_upper_arm_bone and left_upper_arm_bone in armature_obj.pose.bones:
-            left_pivot_point = armature_obj.matrix_world @ armature_obj.pose.bones[left_upper_arm_bone].head
+        left_arm_base_bones = []
+        right_arm_base_bones = []
+        left_upper_arm_base_bone = None
+        right_upper_arm_base_bone = None
 
-        # RightUpperArmのheadを起点として取得
+        # base_avatar_dataからヒューマノイドボーンを取得
+        for bone_map in base_avatar_data.get("humanoidBones", []):
+            humanoid_name = bone_map.get("humanoidBoneName")
+            bone_name = bone_map.get("boneName")
+            if humanoid_name == "LeftUpperArm":
+                left_upper_arm_base_bone = bone_name
+            elif humanoid_name == "RightUpperArm":
+                right_upper_arm_base_bone = bone_name
+            if humanoid_name in left_arm_humanoid_names:
+                left_arm_base_bones.append(bone_name)
+            elif humanoid_name in right_arm_humanoid_names:
+                right_arm_base_bones.append(bone_name)
+
+        # base_armatureのLeftUpperArmのheadを起点として取得
+        left_pivot_point = None
+        if left_upper_arm_base_bone and left_upper_arm_base_bone in base_armature.pose.bones:
+            left_pivot_point = base_armature.matrix_world @ base_armature.pose.bones[left_upper_arm_base_bone].head
+
+        # base_armatureのRightUpperArmのheadを起点として取得
         right_pivot_point = None
-        if right_upper_arm_bone and right_upper_arm_bone in armature_obj.pose.bones:
-            right_pivot_point = armature_obj.matrix_world @ armature_obj.pose.bones[right_upper_arm_bone].head
+        if right_upper_arm_base_bone and right_upper_arm_base_bone in base_armature.pose.bones:
+            right_pivot_point = base_armature.matrix_world @ base_armature.pose.bones[right_upper_arm_base_bone].head
 
         # 左腕全体に-45度のY軸回転を適用（LeftUpperArmのheadを起点）
         if left_pivot_point:
@@ -3856,15 +4027,34 @@ def generate_temp_shapekeys_for_weight_transfer(obj: bpy.types.Object, armature_
         elif humanoid_name in right_leg_humanoid_names:
             right_leg_bones.append(bone_name)
 
+    left_leg_base_bones = []
+    right_leg_base_bones = []
+    left_upper_leg_base_bone = None
+    right_upper_leg_base_bone = None
+
+    # base_avatar_dataからヒューマノイドボーンを取得
+    for bone_map in base_avatar_data.get("humanoidBones", []):
+        humanoid_name = bone_map.get("humanoidBoneName")
+        bone_name = bone_map.get("boneName")
+        if humanoid_name == "LeftUpperLeg":
+            left_upper_leg_base_bone = bone_name
+        elif humanoid_name == "RightUpperLeg":
+            right_upper_leg_base_bone = bone_name
+
+        if humanoid_name in left_leg_humanoid_names:
+            left_leg_base_bones.append(bone_name)
+        elif humanoid_name in right_leg_humanoid_names:
+            right_leg_base_bones.append(bone_name)
+
     # LeftUpperLegのheadを起点として取得
     left_leg_pivot_point = None
-    if left_upper_leg_bone and left_upper_leg_bone in armature_obj.pose.bones:
-        left_leg_pivot_point = armature_obj.matrix_world @ armature_obj.pose.bones[left_upper_leg_bone].head
+    if left_upper_leg_base_bone and left_upper_leg_base_bone in base_armature.pose.bones:
+        left_leg_pivot_point = base_armature.matrix_world @ base_armature.pose.bones[left_upper_leg_base_bone].head
 
     # RightUpperLegのheadを起点として取得
     right_leg_pivot_point = None
-    if right_upper_leg_bone and right_upper_leg_bone in armature_obj.pose.bones:
-        right_leg_pivot_point = armature_obj.matrix_world @ armature_obj.pose.bones[right_upper_leg_bone].head
+    if right_upper_leg_base_bone and right_upper_leg_base_bone in base_armature.pose.bones:
+        right_leg_pivot_point = base_armature.matrix_world @ base_armature.pose.bones[right_upper_leg_base_bone].head
 
     # 左足全体に-70度のY軸回転を適用（LeftUpperLegのheadを起点）
     if left_leg_pivot_point:
@@ -4034,16 +4224,14 @@ def process_missing_bone_weights(base_mesh: bpy.types.Object, clothing_armature:
 
             elif (humanoid_name == "LeftBreast" and
                   "LeftBreast" not in clothing_humanoid_to_bone and
-                  ("Chest" in clothing_humanoid_to_bone or "UpperChest" in clothing_humanoid_to_bone) and
-                  (clothing_humanoid_to_bone["Chest"] in clothing_bone_names or clothing_humanoid_to_bone["UpperChest"] in clothing_bone_names) and
+                  ("Chest" in clothing_humanoid_to_bone and clothing_humanoid_to_bone["Chest"] in clothing_bone_names or "UpperChest" in clothing_humanoid_to_bone and clothing_humanoid_to_bone["UpperChest"] in clothing_bone_names) and
                   "LeftBreast" in base_humanoid_to_bone):
                 should_preserve = True
                 print("Preserving LeftBreast bone weights due to Chest condition")
 
             elif (humanoid_name == "RightBreast" and
                   "RightBreast" not in clothing_humanoid_to_bone and
-                  ("Chest" in clothing_humanoid_to_bone or "UpperChest" in clothing_humanoid_to_bone) and
-                  (clothing_humanoid_to_bone["Chest"] in clothing_bone_names or clothing_humanoid_to_bone["UpperChest"] in clothing_bone_names) and
+                  ("Chest" in clothing_humanoid_to_bone and clothing_humanoid_to_bone["Chest"] in clothing_bone_names or "UpperChest" in clothing_humanoid_to_bone and clothing_humanoid_to_bone["UpperChest"] in clothing_bone_names) and
                   "RightBreast" in base_humanoid_to_bone):
                 should_preserve = True
                 print("Preserving RightBreast bone weights due to Chest condition")
@@ -4182,7 +4370,6 @@ def create_hinge_bone_group(obj: bpy.types.Object, armature: bpy.types.Object, a
                         if g.group == group_index:
                             weight = g.weight
                             hinge_bone_group.add([index], weight, 'REPLACE')
-                            print(f"Added weight to {index}")
                             break
 
 
@@ -4642,6 +4829,14 @@ def replace_humanoid_bones(base_armature: bpy.types.Object, clothing_armature: b
     for bone_name in base_bones:
         source_bone = base_armature.data.edit_bones.get(bone_name)
         if source_bone:
+            # 同名のボーンが既に存在する場合は削除
+            if bone_name in clothing_edit_bones:
+                clothing_edit_bones.remove(clothing_edit_bones[bone_name])
+                # original_bone_dataからも削除
+                if bone_name in original_bone_data:
+                    del original_bone_data[bone_name]
+                if bone_name in children_to_update:
+                    children_to_update.remove(bone_name)
             new_bone = clothing_edit_bones.new(name=bone_name)
             copy_bone_transform(source_bone, new_bone)
             new_bones[bone_name] = new_bone
@@ -5167,6 +5362,131 @@ def get_deformation_bone_groups(avatar_data: dict) -> set:
             bone_groups.update(aux_bones)
 
     return bone_groups
+
+def is_head_part(obj: bpy.types.Object, clothing_avatar_data: dict) -> bool:
+    """
+    objに含まれる頂点グループの内、Armatureモディファイアで指定されているArmatureに含まれるボーンの頂点グループで、
+    そのボーンの親を辿った時最初にたどり着くHumanoidBoneがHeadであるものを集める。
+    有効なボーンウェイトがすべてそのようなボーンのものであった時にTrueを返す。
+
+    Parameters:
+        obj: 調べるメッシュオブジェクト
+        clothing_avatar_data: 衣装アバターデータ（humanoidBonesとauxiliaryBonesを含む）
+
+    Returns:
+        bool: すべてのウェイトがHeadに紐づくボーンの場合True、それ以外はFalse
+    """
+    # Armatureモディファイアを探す
+    armature_mod = None
+    armature_obj = None
+    for mod in obj.modifiers:
+        if mod.type == 'ARMATURE' and mod.object:
+            armature_mod = mod
+            armature_obj = mod.object
+            break
+
+    if not armature_obj:
+        # Armatureモディファイアが見つからない場合はFalseを返す
+        return False
+
+    # clothing_avatar_dataからボーン名→Humanoidボーン名のマッピングを作成
+    bone_to_humanoid = {}
+    if "humanoidBones" in clothing_avatar_data:
+        for bone_map in clothing_avatar_data["humanoidBones"]:
+            bone_name = bone_map.get("boneName", "")
+            humanoid_name = bone_map.get("humanoidBoneName", "")
+            if bone_name and humanoid_name:
+                bone_to_humanoid[bone_name] = humanoid_name
+
+    # 補助ボーンからparentHumanoidBoneNameへのマッピングを作成
+    if "auxiliaryBones" in clothing_avatar_data:
+        for aux_bone_set in clothing_avatar_data["auxiliaryBones"]:
+            parent_humanoid = aux_bone_set.get("humanoidBoneName", "")
+            aux_bones_list = aux_bone_set.get("auxiliaryBones", [])
+            if parent_humanoid and aux_bones_list:
+                for aux_bone_name in aux_bones_list:
+                    bone_to_humanoid[aux_bone_name] = parent_humanoid
+
+    def get_first_humanoid_bone(bone_name: str, armature: bpy.types.Object, visited: set = None) -> str:
+        """
+        ボーンの親を辿って最初にたどり着くHumanoidBoneを返す。
+        自身がHumanoidBoneの場合は自身を返す。
+
+        Parameters:
+            bone_name: ボーン名
+            armature: Armatureオブジェクト
+            visited: 循環参照防止のための訪問済みボーンセット
+
+        Returns:
+            str: 最初にたどり着くHumanoidボーン名（見つからない場合は空文字列）
+        """
+        if visited is None:
+            visited = set()
+
+        # 循環参照チェック
+        if bone_name in visited:
+            return ""
+        visited.add(bone_name)
+
+        # 自身がHumanoidボーンの場合
+        if bone_name in bone_to_humanoid:
+            return bone_to_humanoid[bone_name]
+
+        # Armatureにボーンが存在するか確認
+        if bone_name not in armature.data.bones:
+            return ""
+
+        bone = armature.data.bones[bone_name]
+
+        # 親ボーンがある場合は再帰的に辿る
+        if bone.parent:
+            return get_first_humanoid_bone(bone.parent.name, armature, visited)
+
+        # 親がなく、Humanoidボーンでもない場合は空文字列を返す
+        return ""
+
+    # 頂点がない場合はFalseを返す
+    if not obj.data.vertices:
+        return False
+
+    # オブジェクトの頂点グループを調べる
+    # ウェイトが設定されているボーン（頂点グループ）を収集
+    weighted_bones = set()
+
+    # 各頂点のウェイトを調べる
+    for vert in obj.data.vertices:
+        for g in vert.groups:
+            if g.weight > 0.00001:  # ウェイトが0より大きい場合のみ
+                try:
+                    # 頂点グループのインデックスから名前を取得
+                    vg = obj.vertex_groups[g.group]
+                    weighted_bones.add(vg.name)
+                except (KeyError, IndexError):
+                    continue
+
+    # ウェイトが設定されているボーンがない場合はFalseを返す
+    if not weighted_bones:
+        return False
+
+    # すべてのウェイトボーンについて、親を辿った最初のHumanoidボーンがHeadかどうかを確認
+    for bone_name in weighted_bones:
+        # Armatureにボーンが存在しない場合はスキップ
+        if bone_name not in armature_obj.data.bones:
+            continue
+
+        # このボーンの親を辿って最初のHumanoidボーンを取得
+        first_humanoid = get_first_humanoid_bone(bone_name, armature_obj)
+
+        # Humanoidボーンが見つからない場合はスキップ
+        if not first_humanoid:
+            continue
+
+        # Head以外のHumanoidボーンが見つかった場合はFalseを返す
+        if first_humanoid != "Head":
+            return False
+
+    # すべてのウェイトボーンがHeadに紐づくボーンだった
+    return True
 
 def create_deformation_mask(obj: bpy.types.Object, avatar_data: dict) -> None:
     """
@@ -10982,6 +11302,177 @@ def transfer_weights_from_nearest_vertex(base_mesh, target_obj, vertex_group_nam
         if original_mode.startswith('EDIT'):
             bpy.ops.object.mode_set(mode='EDIT')
 
+def transfer_weights_x_projection(template_obj, target_obj, source_group_name, target_group_name):
+    """
+    template_objのsource_group_name頂点グループのウェイトをtarget_objのtarget_group_nameグループへX軸投影で転写する
+
+    Args:
+        template_obj: テンプレートメッシュオブジェクト（ウェイトのソース）
+        target_obj: ターゲットメッシュオブジェクト（ウェイトの転写先）
+        source_group_name: ソース頂点グループ名
+        target_group_name: ターゲット頂点グループ名
+    """
+    # オブジェクトの検証
+    if not template_obj or template_obj.type != 'MESH':
+        print("エラー: テンプレートメッシュが指定されていないか、メッシュではありません")
+        return
+
+    if not target_obj or target_obj.type != 'MESH':
+        print("エラー: ターゲットメッシュが指定されていないか、メッシュではありません")
+        return
+
+    # テンプレートメッシュのsource_group_name頂点グループを取得
+    source_vertex_group = None
+    for vg in template_obj.vertex_groups:
+        if vg.name == source_group_name:
+            source_vertex_group = vg
+            break
+
+    if not source_vertex_group:
+        print(f"エラー: テンプレートメッシュに頂点グループ '{source_group_name}' が見つかりません")
+        return
+
+    # テンプレートメッシュの全頂点のウェイトを事前にキャッシュ（効率化）
+    vg_index = source_vertex_group.index
+    cache_time_start = time.time()
+    vertex_weights = {}
+    weight_count = 0
+    total_weight = 0.0
+
+    for v in template_obj.data.vertices:
+        weight = 0.0
+        for g in v.groups:
+            if g.group == vg_index:
+                weight = g.weight
+                weight_count += 1
+                total_weight += weight
+                break
+        vertex_weights[v.index] = weight
+
+    cache_time = time.time() - cache_time_start
+    print(f"  {source_group_name}グループ: {weight_count}個の頂点にウェイトあり（平均: {total_weight/max(1, weight_count):.4f}）")
+    print(f"  ウェイトキャッシュ作成: {cache_time:.2f}秒")
+
+    print(f"テンプレートメッシュ '{template_obj.name}' の{source_group_name}グループからターゲットメッシュ '{target_obj.name}' の{target_group_name}グループへX軸投影でウェイトを転写中...")
+
+    # モードを確認してオブジェクトモードに切り替え
+    original_mode = bpy.context.mode
+    if original_mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # ターゲットメッシュのtarget_group_name頂点グループを取得または作成
+    if target_group_name not in target_obj.vertex_groups:
+        target_obj.vertex_groups.new(name=target_group_name)
+    target_vertex_group = target_obj.vertex_groups[target_group_name]
+
+    # テンプレートメッシュのBMeshとBVHツリーを作成
+    template_bm = get_evaluated_mesh(template_obj)
+
+    # 一時的にすべての面を三角面に変換
+    triangulate_time_start = time.time()
+    bmesh.ops.triangulate(template_bm, faces=template_bm.faces)
+    triangulate_time = time.time() - triangulate_time_start
+    print(f"  テンプレートメッシュ三角化: {triangulate_time:.2f}秒")
+
+    template_bm.faces.ensure_lookup_table()
+    template_bm.verts.ensure_lookup_table()
+
+    bvh_time_start = time.time()
+    bvh_tree = BVHTree.FromBMesh(template_bm)
+    bvh_time = time.time() - bvh_time_start
+    print(f"  BVHツリー作成: {bvh_time:.2f}秒")
+
+    # ターゲットメッシュのBMeshを作成
+    target_bm = get_evaluated_mesh(target_obj)
+    target_bm.verts.ensure_lookup_table()
+
+    # X軸方向のベクトル
+    x_pos_dir = Vector((1.0, 0.0, 0.0))
+    x_neg_dir = Vector((-1.0, 0.0, 0.0))
+
+    # ターゲットメッシュの各頂点に対して処理
+    weight_calc_time_start = time.time()
+    hit_count = 0
+    non_zero_weight_count = 0
+
+    for i, vertex in enumerate(target_bm.verts):
+        # ワールド座標系での頂点位置
+        target_vert_world = vertex.co
+
+        # +X方向と-X方向でレイキャストを実行
+        best_weight = 0.0
+
+        for direction in [x_pos_dir, x_neg_dir]:
+            # レイキャストで最も近い面を検索
+            location, normal, index, distance = bvh_tree.ray_cast(target_vert_world, direction, 0.05)
+
+            if location is not None:
+                hit_count += 1
+                # ヒットした面を取得
+                face = template_bm.faces[index]
+
+                # 面上の点のウェイトを補間で計算
+                # 面の3つの頂点を取得
+                v0, v1, v2 = face.verts[0], face.verts[1], face.verts[2]
+
+                # キャッシュから各頂点のウェイトを高速取得
+                w0 = vertex_weights.get(v0.index, 0.0)
+                w1 = vertex_weights.get(v1.index, 0.0)
+                w2 = vertex_weights.get(v2.index, 0.0)
+
+                # デバッグ: 最初のヒットで頂点ウェイトを表示
+                if i < 5 and (w0 > 0 or w1 > 0 or w2 > 0):
+                    print(f"  デバッグ 頂点{i} 面{index}: v0={v0.index}(w={w0:.4f}), v1={v1.index}(w={w1:.4f}), v2={v2.index}(w={w2:.4f})")
+
+                # 重心座標を計算して補間
+                p0 = v0.co
+                p1 = v1.co
+                p2 = v2.co
+                p = location
+
+                # 重心座標を計算
+                u, v, w = barycentric_coords_from_point(p, p0, p1, p2)
+
+                # ウェイトを補間
+                if u >= 0 and v >= 0 and w >= 0:
+                    interpolated_weight = w0 * u + w1 * v + w2 * w
+                    interpolated_weight = max(0.0, min(1.0, interpolated_weight))
+                else:
+                    # 退化した三角形の場合は最も近い頂点のウェイトを使用
+                    dist0 = (p - p0).length
+                    dist1 = (p - p1).length
+                    dist2 = (p - p2).length
+
+                    if dist0 <= dist1 and dist0 <= dist2:
+                        interpolated_weight = w0
+                    elif dist1 <= dist2:
+                        interpolated_weight = w1
+                    else:
+                        interpolated_weight = w2
+
+                # 両方向の最大値を取る
+                best_weight = max(best_weight, interpolated_weight)
+
+        if best_weight > 0.0:
+            non_zero_weight_count += 1
+
+        # 現在のウェイトを取得（例外処理不要の方法）
+        current_weight = 0.0
+        vertex = target_obj.data.vertices[i]
+        for g in vertex.groups:
+            if g.group == target_vertex_group.index:
+                current_weight = g.weight
+                break
+
+        # ウェイトを加算
+        new_weight = min(1.0, current_weight + best_weight)
+        target_vertex_group.add([i], new_weight, 'REPLACE')
+
+    weight_calc_time = time.time() - weight_calc_time_start
+    print(f"  ウェイト計算: {weight_calc_time:.2f}秒")
+    print(f"  レイキャストヒット数: {hit_count} / {len(target_bm.verts) * 2} (2方向)")
+    print(f"  ウェイト>0の頂点数: {non_zero_weight_count} / {len(target_bm.verts)}")
+
 def barycentric_coords_from_point(p, a, b, c):
     """
     三角形上の点pの重心座標を計算する
@@ -11995,24 +12486,25 @@ def calculate_obb_from_points(points):
 
 def reset_bone_weights(target_obj, bone_groups):
     """指定された頂点グループのウェイトを0に設定"""
+    group_names = {g.index: g.name for g in target_obj.vertex_groups if g.name in bone_groups}
     for vert in target_obj.data.vertices:
-        for group in target_obj.vertex_groups:
-            if group.name in bone_groups:
-                try:
-                    group.add([vert.index], 0, 'REPLACE')
-                except RuntimeError:
-                    continue
+        weights = {}
+        for g in vert.groups:
+            if g.group in group_names:
+                g.weight = 0.0
 
 def store_weights(target_obj, bone_groups_to_store):
     """頂点グループのウェイトを保存"""
     group_names = {g.index: g.name for g in target_obj.vertex_groups if g.name in bone_groups_to_store}
     vertex_weights = {}
+
     for vert in target_obj.data.vertices:
         weights = {}
         for g in vert.groups:
             if g.group in group_names:
                 weights[group_names[g.group]] = g.weight
         vertex_weights[vert.index] = weights
+
     return vertex_weights
 
 def restore_weights(target_obj, stored_weights):
@@ -14501,7 +14993,7 @@ def create_side_weight_groups(mesh_obj: bpy.types.Object, base_avatar_data: dict
                 parent_humanoid_name = clothing_bone_to_humanoid[current_bone.name]
                 break
             current_bone = current_bone.parent
-        print(f"current_bone_name: {current_bone_name}, parent_humanoid_name: {parent_humanoid_name}")
+        #print(f"current_bone_name: {current_bone_name}, parent_humanoid_name: {parent_humanoid_name}")
         if parent_humanoid_name:
             if parent_humanoid_name in ignored_bones:
                 continue
@@ -15291,6 +15783,560 @@ def create_distance_normal_based_vertex_group(body_obj, cloth_obj, distance_thre
     return vertex_group
 
 
+# ==================== 外部スクリプト実行関連関数 ====================
+
+def get_blender_python_path():
+    """BlenderのPythonバイナリパスを取得"""
+    # Blenderの実行ファイルがあるディレクトリを取得
+    blender_dir = bpy.app.binary_path
+    blender_dir = os.path.dirname(blender_dir)
+
+    # バージョン番号を取得
+    version = f"{bpy.app.version[0]}.{bpy.app.version[1]}"
+
+    # OSに応じたパスを構築
+    if sys.platform == "win32":
+        # Windows
+        python_path = os.path.join(blender_dir, version, "python", "bin", "python.exe")
+        if not os.path.exists(python_path):
+            # 別のパターンを試す
+            python_path = os.path.join(blender_dir, version, "python", "bin", "python3.exe")
+        if not os.path.exists(python_path):
+            # さらに別のパターン
+            python_path = os.path.join(blender_dir, version, "python", "python.exe")
+    elif sys.platform == "darwin":
+        # macOS
+        python_path = os.path.join(blender_dir, "..", "Resources", version, "python", "bin", "python3")
+        if not os.path.exists(python_path):
+            python_path = os.path.join(blender_dir, version, "python", "bin", "python3")
+    else:
+        # Linux
+        python_path = os.path.join(blender_dir, version, "python", "bin", "python3")
+
+    # 存在確認
+    if not os.path.exists(python_path):
+        # sys.executableをフォールバックとして使用
+        python_path = sys.executable
+
+    return python_path
+
+
+def get_smoothing_processor_script_path():
+    """スムージング処理スクリプトのパスを取得"""
+    global _unity_script_directory
+
+    script_path = None
+    if _unity_script_directory is not None:
+        script_path = os.path.join(_unity_script_directory, "smoothing_processor.py")
+        if not os.path.exists(script_path):
+            script_path = None
+
+    # if script_path is None:
+    #     # このスクリプトと同じディレクトリ内のsmoothing_processor.pyを参照
+    #     current_dir = os.path.dirname(os.path.abspath(__file__))
+    #     script_path = os.path.join(current_dir, "smoothing_processor.py")
+
+    if script_path is None or not os.path.exists(script_path):
+        print(f"警告: スムージング処理スクリプトが見つかりません: {script_path}")
+        return None
+
+    return script_path
+
+
+def get_blender_python_user_site_packages(python_path=None):
+    """BlenderのPythonのユーザーサイトパッケージパスを取得"""
+    if python_path is None:
+        python_path = get_blender_python_path()
+
+    try:
+        # サブプロセスでsite.getusersitepackages()を実行
+        result = subprocess.run(
+            [python_path, '-c', 'import site; print(site.getusersitepackages())'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
+        )
+
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception as e:
+        print(f"ユーザーサイトパッケージパスの取得に失敗: {e}")
+
+    return None
+
+
+def get_blender_python_lib_paths():
+    """BlenderのPythonライブラリパスを取得"""
+    lib_paths = []
+
+    # Blenderの実行ファイルがあるディレクトリを取得
+    blender_dir = os.path.dirname(bpy.app.binary_path)
+    version = f"{bpy.app.version[0]}.{bpy.app.version[1]}"
+
+    # 標準的なパスを追加
+    if sys.platform == "win32":
+        lib_paths.append(os.path.join(blender_dir, version, "python", "lib"))
+        lib_paths.append(os.path.join(blender_dir, version, "python", "lib", "site-packages"))
+        lib_paths.append(os.path.join(blender_dir, version, "scripts", "modules"))
+    elif sys.platform == "darwin":
+        lib_paths.append(os.path.join(blender_dir, "..", "Resources", version, "python", "lib"))
+        lib_paths.append(os.path.join(blender_dir, "..", "Resources", version, "scripts", "modules"))
+    else:
+        lib_paths.append(os.path.join(blender_dir, version, "python", "lib"))
+        lib_paths.append(os.path.join(blender_dir, version, "scripts", "modules"))
+
+    # sys.pathからも追加
+    for path in sys.path:
+        if path and 'site-packages' in path:
+            lib_paths.append(path)
+
+    # 重複を除去して存在するパスのみを返す
+    unique_paths = []
+    for path in lib_paths:
+        if path not in unique_paths and os.path.exists(path):
+            unique_paths.append(path)
+
+    return unique_paths
+
+
+# numpyとscipyチェック済みフラグ（初回のみチェックするため）
+_numpy_checked = False
+_scipy_checked = False
+
+
+def ensure_numpy_installed(python_path=None):
+    """
+    numpyとscipyがインストールされていることを確認し、
+    numpyがマルチスレッド対応版でない場合は再インストール
+    （初回呼び出し時のみ実行）
+
+    Returns:
+        bool: 成功した場合True
+    """
+    global _numpy_checked, _scipy_checked
+
+    # 既にチェック済みの場合はスキップ
+    if _numpy_checked and _scipy_checked:
+        return True
+
+    if python_path is None:
+        python_path = get_blender_python_path()
+
+    try:
+        # depsディレクトリのパス
+        deps_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MochiFitter', 'deps')
+
+        # deps_pathをPYTHONPATHに追加した環境変数を準備
+        env = os.environ.copy()
+        existing_pythonpath = env.get('PYTHONPATH', '')
+        if existing_pythonpath:
+            env['PYTHONPATH'] = deps_path + os.pathsep + existing_pythonpath
+        else:
+            env['PYTHONPATH'] = deps_path
+
+        # numpyがインストールされているか確認
+        numpy_check = subprocess.run(
+            [python_path, '-c', 'import numpy; print(numpy.__version__)'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env
+        )
+
+        numpy_installed = numpy_check.returncode == 0
+        numpy_version = numpy_check.stdout.strip() if numpy_installed else None
+
+        if not numpy_installed:
+            print("numpyがインストールされていません。インストールを試みます...")
+            os.makedirs(deps_path, exist_ok=True)
+
+            install_result = subprocess.run(
+                [python_path, '-m', 'pip', 'install', '--target', deps_path, 'numpy'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+
+            if install_result.returncode != 0:
+                print(f"インストールに失敗しました: {install_result.stderr}")
+                return False
+
+            print("numpyをインストールしました")
+            return True
+
+        # numpyのマルチスレッド対応を確認
+        check_script = '''
+import numpy as np
+import io
+import sys
+
+# 出力をキャプチャ
+old_stdout = sys.stdout
+sys.stdout = io.StringIO()
+
+try:
+    np.show_config()
+    config_output = sys.stdout.getvalue()
+finally:
+    sys.stdout = old_stdout
+
+# OpenBLAS, MKL, または他のBLASライブラリがあるかチェック
+config_lower = config_output.lower()
+has_openblas = 'openblas' in config_lower
+has_mkl = 'mkl' in config_lower
+has_blas = 'blas' in config_lower and ('libraries' in config_lower or 'lib' in config_lower)
+
+# マルチスレッド対応かどうかを判定
+is_multithreaded = has_openblas or has_mkl or has_blas
+
+if is_multithreaded:
+    print("MULTITHREADED")
+else:
+    print("SINGLETHREADED")
+'''
+        result = subprocess.run(
+            [python_path, '-c', check_script],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env
+        )
+
+        output = result.stdout.strip()
+        is_multithreaded = "MULTITHREADED" in output
+
+        print(f"numpy バージョン: {numpy_version}")
+        print(f"マルチスレッド対応: {'はい' if is_multithreaded else 'いいえ'}")
+
+        if not is_multithreaded:
+            print("numpyがマルチスレッド対応ではありません。再インストールを試みます...")
+            os.makedirs(deps_path, exist_ok=True)
+
+            # 強制再インストール
+            install_result = subprocess.run(
+                [python_path, '-m', 'pip', 'install', '--target', deps_path,
+                 '--force-reinstall', '--no-deps', f'numpy=={numpy_version}'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+
+            if install_result.returncode != 0:
+                print(f"再インストールに失敗しました: {install_result.stderr}")
+                # 失敗しても続行（元のnumpyは使える）
+            else:
+                print("numpyをマルチスレッド対応版で再インストールしました")
+
+        # numpyチェック完了をマーク
+        _numpy_checked = True
+
+        # scipyがインストールされているか確認
+        scipy_check = subprocess.run(
+            [python_path, '-c', 'import scipy; print(scipy.__version__)'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env
+        )
+
+        scipy_installed = scipy_check.returncode == 0
+        scipy_version = scipy_check.stdout.strip() if scipy_installed else None
+
+        if scipy_installed:
+            print(f"scipy バージョン: {scipy_version}")
+        else:
+            print("scipyがインストールされていません。インストールを試みます...")
+            os.makedirs(deps_path, exist_ok=True)
+
+            install_result = subprocess.run(
+                [python_path, '-m', 'pip', 'install', '--target', deps_path, 'scipy'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+
+            if install_result.returncode != 0:
+                print(f"scipyインストールに失敗しました: {install_result.stderr}")
+                _scipy_checked = True
+                return False
+
+            print("scipyをインストールしました")
+
+        # scipyチェック完了をマーク
+        _scipy_checked = True
+        return True
+
+    except Exception as e:
+        print(f"numpy/scipy確認中にエラーが発生: {e}")
+        import traceback
+        traceback.print_exc()
+        # エラーが発生しても再度チェックしないようにマーク
+        _numpy_checked = True
+        _scipy_checked = True
+        return False
+
+
+def run_smoothing_processor(temp_file_path: str, multi_group: bool = False,
+                            python_path: str = None, processor_path: str = None,
+                            max_workers: int = None) -> Tuple[bool, str, str]:
+    """
+    smoothing_processor.pyを外部プロセスとして実行する
+
+    Parameters:
+        temp_file_path: 一時データファイルのパス
+        multi_group: マルチグループモードで実行するか
+        python_path: Pythonバイナリのパス（Noneの場合は自動検出）
+        processor_path: プロセッサスクリプトのパス（Noneの場合は自動検出）
+        max_workers: 最大ワーカー数
+
+    Returns:
+        tuple: (success: bool, output: str, error: str)
+    """
+    try:
+        # デフォルトパスを取得
+        if python_path is None:
+            python_path = get_blender_python_path()
+
+        if processor_path is None:
+            processor_path = get_smoothing_processor_script_path()
+
+        # パスの存在確認
+        if not os.path.exists(python_path):
+            return False, "", f"Pythonバイナリが見つかりません: {python_path}"
+
+        if not processor_path or not os.path.exists(processor_path):
+            return False, "", f"スムージング処理スクリプトが見つかりません: {processor_path}"
+
+        # numpy/scipyのインストール確認
+        ensure_numpy_installed(python_path)
+
+        # BlenderのPythonライブラリパスを取得
+        blender_lib_paths = get_blender_python_lib_paths()
+
+        # ユーザーサイトパッケージパスを取得
+        user_site_packages = get_blender_python_user_site_packages(python_path)
+
+        # depsパス
+        deps_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MochiFitter', 'deps')
+
+        # 環境変数を設定
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONLEGACYWINDOWSSTDIO'] = '1'
+        env['PYTHONUNBUFFERED'] = '1'
+
+        # PYTHONPATHを設定
+        pythonpath_parts = []
+        if 'PYTHONPATH' in env:
+            pythonpath_parts.append(env['PYTHONPATH'])
+
+        if os.path.exists(deps_path):
+            pythonpath_parts.append(deps_path)
+        if user_site_packages:
+            pythonpath_parts.append(user_site_packages)
+        pythonpath_parts.extend(blender_lib_paths)
+        env['PYTHONPATH'] = os.pathsep.join(pythonpath_parts)
+
+        # マルチスレッド用環境変数
+        if max_workers is None:
+            max_workers = os.cpu_count()
+        env['OMP_NUM_THREADS'] = str(max_workers)
+        env['OPENBLAS_NUM_THREADS'] = str(max_workers)
+        env['MKL_NUM_THREADS'] = str(max_workers)
+        env['VECLIB_MAXIMUM_THREADS'] = str(max_workers)
+        env['NUMEXPR_NUM_THREADS'] = str(max_workers)
+
+        # コマンドを構築
+        cmd = [python_path, '-u', processor_path, temp_file_path]
+
+        if multi_group:
+            cmd.append('--multi-group')
+
+        cmd.extend(['--max-workers', str(max_workers)])
+
+        print("スムージング処理を開始します...")
+        print(f"実行コマンド: {' '.join(cmd)}")
+
+        # プロセスを実行
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            cwd=os.path.dirname(temp_file_path),
+            env=env,
+            bufsize=1,
+            universal_newlines=True
+        )
+
+        # リアルタイムで出力を読み取り
+        output_lines = []
+
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                line = line.rstrip('\n\r')
+                print(f"[スムージング処理] {line}")
+                output_lines.append(line)
+
+        # プロセスの完了を待つ
+        process.wait()
+        success = process.returncode == 0
+        output = '\n'.join(output_lines)
+
+        if success:
+            print("スムージング処理が正常に完了しました")
+        else:
+            print(f"スムージング処理でエラーが発生しました (return code: {process.returncode})")
+
+        return success, output, ""
+
+    except Exception as e:
+        error_msg = f"スムージング処理の実行中にエラーが発生しました: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        return False, "", error_msg
+
+
+def export_multi_group_smoothing_data(cloth_obj, vertex_coords: np.ndarray,
+                                       target_vertex_groups: List[str],
+                                       mask_weights: np.ndarray,
+                                       smoothing_radius: float,
+                                       target_group_iteration: int,
+                                       use_distance_weighting: bool,
+                                       gaussian_falloff: bool,
+                                       first_group_name: str = None,
+                                       first_group_weights: np.ndarray = None,
+                                       first_group_iteration: int = 1) -> str:
+    """
+    複数頂点グループのスムージングデータをエクスポート
+
+    Parameters:
+        cloth_obj: 衣装メッシュオブジェクト
+        vertex_coords: 頂点座標
+        target_vertex_groups: 処理対象の頂点グループ名リスト
+        mask_weights: マスクウェイト（追加グループ用、合成に使用）
+        smoothing_radius: スムージング半径
+        target_group_iteration: 追加グループのイテレーション回数
+        use_distance_weighting: 距離重み付けを使用するか
+        gaussian_falloff: ガウシアン減衰を使用するか
+        first_group_name: 最初のグループ名（マスクなしスムージング用）
+        first_group_weights: 最初のグループのウェイト
+        first_group_iteration: 最初のグループのイテレーション回数
+
+    Returns:
+        str: 一時ファイルのパス
+    """
+    # 一時ファイルを作成
+    temp_dir = tempfile.gettempdir()
+    timestamp = int(time.time() * 1000)
+    temp_file = os.path.join(temp_dir, f"smoothing_data_{timestamp}.npz")
+
+    # 基本データを準備
+    save_data = {
+        'vertex_coords': vertex_coords,
+        'smoothing_radius': smoothing_radius,
+        'use_distance_weighting': use_distance_weighting,
+        'gaussian_falloff': gaussian_falloff,
+    }
+
+    # first_groupのデータ（マスクなしスムージング）
+    if first_group_name is not None and first_group_weights is not None:
+        save_data['first_group_name'] = first_group_name
+        save_data['first_group_weights'] = first_group_weights
+        save_data['first_group_iteration'] = first_group_iteration
+
+    # target_groupsのデータ（マスク付きスムージング）
+    if mask_weights is not None:
+        save_data['mask_weights'] = mask_weights
+    save_data['target_group_iteration'] = target_group_iteration
+    save_data['group_names'] = np.array(target_vertex_groups) if target_vertex_groups else np.array([])
+
+    num_vertices = len(vertex_coords)
+
+    for group_name in target_vertex_groups:
+        if group_name not in cloth_obj.vertex_groups:
+            print(f"警告: 頂点グループ '{group_name}' が見つかりません")
+            continue
+
+        target_group = cloth_obj.vertex_groups[group_name]
+        original_weights = np.zeros(num_vertices, dtype=np.float32)
+
+        for i, vertex in enumerate(cloth_obj.data.vertices):
+            for group in vertex.groups:
+                if group.group == target_group.index:
+                    original_weights[i] = group.weight
+                    break
+
+        save_data[f'group_{group_name}'] = original_weights
+
+    np.savez_compressed(temp_file, **save_data)
+    print(f"スムージングデータをエクスポートしました: {temp_file}")
+
+    return temp_file
+
+
+def import_multi_group_smoothing_results(cloth_obj, result_file_path: str) -> Dict[str, np.ndarray]:
+    """
+    複数頂点グループのスムージング結果をインポートして適用
+
+    Parameters:
+        cloth_obj: 衣装メッシュオブジェクト
+        result_file_path: 結果ファイルのパス
+
+    Returns:
+        Dict: {グループ名: final_weights}
+    """
+    if not os.path.exists(result_file_path):
+        print(f"エラー: 結果ファイルが見つかりません: {result_file_path}")
+        return {}
+
+    print(f"スムージング結果を読み込み中: {result_file_path}")
+    data = np.load(result_file_path, allow_pickle=True)
+
+    group_names = list(data['group_names'])
+    results = {}
+
+    for group_name in group_names:
+        final_key = f"final_{group_name}"
+        skipped_key = f"skipped_{group_name}"
+
+        if final_key in data:
+            final_weights = data[final_key]
+            skipped = bool(data[skipped_key]) if skipped_key in data else False
+
+            if not skipped:
+                # 頂点グループにウェイトを適用
+                if group_name in cloth_obj.vertex_groups:
+                    target_group = cloth_obj.vertex_groups[group_name]
+                    for i in range(len(final_weights)):
+                        target_group.add([i], float(final_weights[i]), 'REPLACE')
+                    print(f"  グループ '{group_name}' のウェイトを適用しました")
+                else:
+                    print(f"  警告: グループ '{group_name}' が見つかりません")
+            else:
+                print(f"  グループ '{group_name}' はスキップされました")
+
+            results[group_name] = final_weights
+
+    return results
+
+
+# ==================== 外部スクリプト実行関連関数 ここまで ====================
+
+
 def apply_smoothing_to_vertex_group(cloth_obj, vertex_group_name, smoothing_radius=0.02, iteration=1, use_distance_weighting=True, gaussian_falloff=True, neighbors_cache=None):
     """
     指定された頂点グループに対してスムージング処理を適用します
@@ -15377,8 +16423,6 @@ def apply_smoothing_to_vertex_group(cloth_obj, vertex_group_name, smoothing_radi
                     weights_sum = np.sum(weights)
                     if weights_sum > 0.001:
                         smoothed_weights[i] = neighbor_weights @ weights / weights_sum
-                    else:
-                        smoothed_weights[i] = current_weights[i]
                 else:
                     # 従来の単純平均
                     smoothed_weights[i] = np.mean(neighbor_weights)
@@ -15914,108 +16958,196 @@ def apply_distance_normal_based_smoothing(body_obj, cloth_obj, distance_min=0.0,
     print("  Maxフィルター適用中...")
     apply_max_filter_to_vertex_group(cloth_obj, new_group_name, filter_radius=0.02)
 
-    # === 新しく作成された頂点グループに対するスムージング処理 ===
-    print("  新しく作成された頂点グループのスムージング処理適用中...")
-    neighbors_cache_result = apply_smoothing_to_vertex_group(cloth_obj, new_group_name, smoothing_radius, iteration=1, use_distance_weighting=True, gaussian_falloff=True)
+    # === スムージング処理 ===
+    # 頂点座標を取得（モディファイア適用後の座標）
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated_obj = cloth_obj.evaluated_get(depsgraph)
+    mesh = evaluated_obj.to_mesh()
+    vertex_coords = np.array([v.co for v in mesh.vertices], dtype=np.float32)
+    evaluated_obj.to_mesh_clear()
 
+    # 新しく作成された頂点グループのウェイトを取得（first_group用）
+    first_group_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
+    for i, vertex in enumerate(cloth_obj.data.vertices):
+        for group in vertex.groups:
+            if group.group == vertex_group.index:
+                first_group_weights[i] = group.weight
+                break
+
+    # 存在する頂点グループのみをフィルタリング
+    valid_target_groups = [g for g in target_vertex_groups if g in cloth_obj.vertex_groups] if target_vertex_groups else []
+
+    # smoothing_mask_groupsの合計ウェイトを計算（0-1でクランプ）
+    smoothing_mask_weights = None
     if smoothing_mask_groups:
-        # 新しく生成された頂点グループのウェイトを取得
-        new_group_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
-        for i, vertex in enumerate(cloth_obj.data.vertices):
-            for group in vertex.groups:
-                if group.group == vertex_group.index:
-                    new_group_weights[i] = group.weight
-                    break
-        # 指定された頂点グループのウェイト合計を計算
-        total_target_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
-
-        for target_group_name in smoothing_mask_groups:
-            if target_group_name in cloth_obj.vertex_groups:
-                target_group = cloth_obj.vertex_groups[target_group_name]
-                print(f"    頂点グループ '{target_group_name}' のウェイトを取得中...")
-
+        smoothing_mask_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
+        for mask_group_name_item in smoothing_mask_groups:
+            if mask_group_name_item in cloth_obj.vertex_groups:
+                mask_group_item = cloth_obj.vertex_groups[mask_group_name_item]
                 for i, vertex in enumerate(cloth_obj.data.vertices):
                     for group in vertex.groups:
-                        if group.group == target_group.index:
-                            total_target_weights[i] += group.weight
+                        if group.group == mask_group_item.index:
+                            smoothing_mask_weights[i] += group.weight
                             break
-            else:
-                print(f"    警告: 頂点グループ '{target_group_name}' が見つかりません")
-
+        # mask_group_nameが指定されている場合、そのウェイトで乗算
         if mask_group_name and mask_group_name in cloth_obj.vertex_groups:
-            mask_group = cloth_obj.vertex_groups[mask_group_name]
+            mask_group_for_mult = cloth_obj.vertex_groups[mask_group_name]
             for i in range(len(cloth_obj.data.vertices)):
-                weight = 0.0
+                mult_weight = 0.0
                 for group in cloth_obj.data.vertices[i].groups:
-                    if group.group == mask_group.index:
-                        weight = group.weight
+                    if group.group == mask_group_for_mult.index:
+                        mult_weight = group.weight
                         break
-                total_target_weights[i] *= weight
+                smoothing_mask_weights[i] *= mult_weight
+        # 0-1でクランプ
+        smoothing_mask_weights = np.clip(smoothing_mask_weights, 0.0, 1.0)
 
-        # 新しい頂点グループのウェイトから合計を減算
-        masked_weights = np.maximum(0.0, new_group_weights * total_target_weights)
+    neighbors_cache_result = None  # フォールバック用
 
-        # 結果を新しい頂点グループに適用
-        for i in range(len(cloth_obj.data.vertices)):
-            vertex_group.add([i], masked_weights[i], 'REPLACE')
+    # 頂点数が1000以上の場合のみ外部スクリプトを使用
+    use_external_script = len(vertex_coords) >= 1000
 
-    # === 追加処理：指定された頂点グループのウェイト処理 ===
-    if target_vertex_groups:
-        print("  指定された頂点グループの処理開始...")
+    if use_external_script:
+        print("  外部スクリプトによるスムージング処理を開始...")
 
-        # 生成された頂点グループのウェイトを取得
-        mask_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
-        for i, vertex in enumerate(cloth_obj.data.vertices):
-            for group in vertex.groups:
-                if group.group == vertex_group.index:
-                    mask_weights[i] = group.weight
-                    break
+        # データをエクスポート（first_groupと追加グループを一括処理）
+        temp_file = export_multi_group_smoothing_data(
+            cloth_obj=cloth_obj,
+            vertex_coords=vertex_coords,
+            target_vertex_groups=valid_target_groups,
+            mask_weights=smoothing_mask_weights,  # smoothing_mask_groupsの合計ウェイト
+            smoothing_radius=smoothing_radius,
+            target_group_iteration=3,  # 追加グループのイテレーション
+            use_distance_weighting=True,
+            gaussian_falloff=True,
+            first_group_name=new_group_name,
+            first_group_weights=first_group_weights,
+            first_group_iteration=1  # first_groupのイテレーション
+        )
 
-        # 指定された頂点グループを処理
-        for target_group_name in target_vertex_groups:
-            if target_group_name not in cloth_obj.vertex_groups:
-                print(f"  警告: 頂点グループ '{target_group_name}' が見つかりません")
-                continue
+        # 外部スクリプトで一括処理を実行
+        success, output, error = run_smoothing_processor(
+            temp_file_path=temp_file,
+            multi_group=True,
+            max_workers=os.cpu_count()
+        )
+    else:
+        print(f"  頂点数が3000未満({len(vertex_coords)}頂点)のため、フォールバック処理を使用します...")
+        success = False  # フォールバック処理を実行させる
+        temp_file = None
 
-            target_group = cloth_obj.vertex_groups[target_group_name]
-            print(f"  処理中の頂点グループ: {target_group_name}")
+    if success:
+        # 結果ファイルのパスを生成
+        result_file = temp_file.replace('.npz', '_result.npz')
 
-            # 1. オリジナルのウェイトを取得
-            original_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
+        # 結果をインポートして適用
+        import_multi_group_smoothing_results(cloth_obj, result_file)
+
+        # 一時ファイルを削除
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+            if os.path.exists(result_file):
+                os.remove(result_file)
+        except Exception as e:
+            print(f"  警告: 一時ファイルの削除に失敗: {e}")
+    else:
+        # フォールバック処理を実行
+        if use_external_script:
+            print("  外部スクリプト処理に失敗しました。フォールバック処理を実行します...")
+
+        # first_groupのスムージング（従来の処理）
+        print("  新しく作成された頂点グループのスムージング処理適用中...")
+        neighbors_cache_result = apply_smoothing_to_vertex_group(cloth_obj, new_group_name, smoothing_radius, iteration=1, use_distance_weighting=True, gaussian_falloff=True)
+
+        # smoothing_mask_groupsの処理（スムージング結果に対するマスク処理）
+        if smoothing_mask_groups:
+            # スムージング後の頂点グループのウェイトを取得
+            new_group_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
             for i, vertex in enumerate(cloth_obj.data.vertices):
                 for group in vertex.groups:
-                    if group.group == target_group.index:
-                        original_weights[i] = group.weight
+                    if group.group == vertex_group.index:
+                        new_group_weights[i] = group.weight
                         break
 
-            # 2. スムージング処理（original_weightsがすべて0でない場合のみ）
-            if np.any(original_weights > 0):
-                print("    スムージング処理実行中...")
-                neighbors_cache_result = apply_smoothing_to_vertex_group(cloth_obj, target_group_name, smoothing_radius, iteration=3, use_distance_weighting=True, gaussian_falloff=True, neighbors_cache=neighbors_cache_result)
+            # 指定された頂点グループのウェイト合計を計算
+            total_target_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
 
-                # 3. スムージング後のウェイトを取得
-                smoothed_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
+            for target_group_name in smoothing_mask_groups:
+                if target_group_name in cloth_obj.vertex_groups:
+                    target_group = cloth_obj.vertex_groups[target_group_name]
+                    print(f"    頂点グループ '{target_group_name}' のウェイトを取得中...")
+
+                    for i, vertex in enumerate(cloth_obj.data.vertices):
+                        for group in vertex.groups:
+                            if group.group == target_group.index:
+                                total_target_weights[i] += group.weight
+                                break
+                else:
+                    print(f"    警告: 頂点グループ '{target_group_name}' が見つかりません")
+
+            if mask_group_name and mask_group_name in cloth_obj.vertex_groups:
+                mask_group = cloth_obj.vertex_groups[mask_group_name]
+                for i in range(len(cloth_obj.data.vertices)):
+                    weight = 0.0
+                    for group in cloth_obj.data.vertices[i].groups:
+                        if group.group == mask_group.index:
+                            weight = group.weight
+                            break
+                    total_target_weights[i] *= weight
+
+            # 新しい頂点グループのウェイトから合計を減算
+            masked_weights = np.maximum(0.0, new_group_weights * total_target_weights)
+
+            # 結果を新しい頂点グループに適用
+            for i in range(len(cloth_obj.data.vertices)):
+                vertex_group.add([i], masked_weights[i], 'REPLACE')
+
+        # 追加グループの処理
+        if valid_target_groups:
+            # 生成された頂点グループのウェイトを取得（スムージング後）
+            mask_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
+            for i, vertex in enumerate(cloth_obj.data.vertices):
+                for group in vertex.groups:
+                    if group.group == vertex_group.index:
+                        mask_weights[i] = group.weight
+                        break
+
+            for target_group_name in valid_target_groups:
+                target_group = cloth_obj.vertex_groups[target_group_name]
+                print(f"  処理中の頂点グループ: {target_group_name}")
+
+                # 1. オリジナルのウェイトを取得
+                original_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
                 for i, vertex in enumerate(cloth_obj.data.vertices):
                     for group in vertex.groups:
                         if group.group == target_group.index:
-                            smoothed_weights[i] = group.weight
+                            original_weights[i] = group.weight
                             break
 
-                # 4. 合成処理
-                print("    合成処理...")
-                for i in range(len(cloth_obj.data.vertices)):
-                    # 生成された頂点グループのウェイトを合成の重みとして使用
-                    blend_factor = mask_weights[i]
+                # 2. スムージング処理（original_weightsがすべて0でない場合のみ）
+                if np.any(original_weights > 0):
+                    print("    スムージング処理実行中...")
+                    neighbors_cache_result = apply_smoothing_to_vertex_group(cloth_obj, target_group_name, smoothing_radius, iteration=3, use_distance_weighting=True, gaussian_falloff=True, neighbors_cache=neighbors_cache_result)
 
-                    # 元のウェイトとスムージング結果を合成
-                    final_weight = original_weights[i] * (1.0 - blend_factor) + smoothed_weights[i] * blend_factor
+                    # 3. スムージング後のウェイトを取得
+                    smoothed_weights = np.zeros(len(cloth_obj.data.vertices), dtype=np.float32)
+                    for i, vertex in enumerate(cloth_obj.data.vertices):
+                        for group in vertex.groups:
+                            if group.group == target_group.index:
+                                smoothed_weights[i] = group.weight
+                                break
 
-                    # 最終ウェイトを設定
-                    target_group.add([i], final_weight, 'REPLACE')
-            else:
-                print("    スキップ: original_weightsがすべて0のため処理をスキップします")
+                    # 4. 合成処理
+                    print("    合成処理...")
+                    for i in range(len(cloth_obj.data.vertices)):
+                        blend_factor = mask_weights[i]
+                        final_weight = original_weights[i] * (1.0 - blend_factor) + smoothed_weights[i] * blend_factor
+                        target_group.add([i], final_weight, 'REPLACE')
+                else:
+                    print("    スキップ: original_weightsがすべて0のため処理をスキップします")
 
-            print(f"    頂点グループ '{target_group_name}' の処理完了")
+                print(f"    頂点グループ '{target_group_name}' の処理完了")
 
     # 元のモードに戻す
     bpy.ops.object.mode_set(mode=current_mode)
@@ -16134,7 +17266,15 @@ def process_weight_transfer(target_obj, armature, base_avatar_data, clothing_ava
 
     closing_filter_mask_weights = create_blendshape_mask(target_obj, ["LeftUpperLeg", "RightUpperLeg", "Hips", "Chest", "Spine", "LeftShoulder", "RightShoulder", "LeftBreast", "RightBreast"], base_avatar_data)
 
-    def attempt_weight_transfer(source_obj, vertex_group, max_distance_try=0.2, max_distance_tried=0.0):
+    # チェック対象の頂点グループを取得
+    target_groups = get_humanoid_and_auxiliary_bone_groups(base_avatar_data)
+
+    # メッシュ内に存在する対象グループのみを抽出
+    existing_target_groups = {vg.name for vg in target_obj.vertex_groups if vg.name in target_groups}
+    # existing_target_groupsにLeftUpperLegとRightUpperLegが含まれている場合フラグを立てる
+    has_upper_leg = ("LeftUpperLeg" in humanoid_to_bone and humanoid_to_bone["LeftUpperLeg"] in existing_target_groups) or ("RightUpperLeg" in humanoid_to_bone and humanoid_to_bone["RightUpperLeg"] in existing_target_groups)
+
+    def attempt_weight_transfer(source_obj, vertex_group, max_distance_try=0.96, max_distance_tried=0.0):
         """ウェイト転送を試行"""
         bone_groups_tmp = get_humanoid_and_auxiliary_bone_groups(base_avatar_data)
         prev_weights = store_weights(target_obj, bone_groups_tmp)
@@ -16218,6 +17358,23 @@ def process_weight_transfer(target_obj, armature, base_avatar_data, clothing_ava
                                 break
                         inpaint_group.add([vert.index], source_weight * inpaint_weight, 'REPLACE')
 
+                if "MF_crotch3" in target_obj.vertex_groups and "InpaintMask" in target_obj.vertex_groups:
+                    inpaint_group = target_obj.vertex_groups["InpaintMask"]
+                    source_group = target_obj.vertex_groups["MF_crotch3"]
+
+                    for vert in target_obj.data.vertices:
+                        source_weight = 0.0
+                        for g in vert.groups:
+                            if g.group == source_group.index:
+                                source_weight = g.weight
+                                break
+                        inpaint_weight = 0.0
+                        for g in vert.groups:
+                            if g.group == inpaint_group.index:
+                                inpaint_weight = g.weight
+                                break
+                        inpaint_group.add([vert.index], max(0, inpaint_weight - source_weight), 'REPLACE')
+
                 # vertex_groupのウェイトが0である頂点のInpaintMaskウェイトを0に設定
                 if "InpaintMask" in target_obj.vertex_groups and vertex_group in target_obj.vertex_groups:
                     inpaint_group = target_obj.vertex_groups["InpaintMask"]
@@ -16234,6 +17391,36 @@ def process_weight_transfer(target_obj, armature, base_avatar_data, clothing_ava
                         # ウェイトが0の場合、InpaintMaskも0に設定
                         if source_weight == 0.0:
                             inpaint_group.add([vert.index], 0.0, 'REPLACE')
+
+            surface_mode_weights = None
+
+            if has_upper_leg:
+                try:
+                    bpy.context.scene.robust_weight_transfer_settings.source_object = source_obj
+                    bpy.context.object.robust_weight_transfer_settings.vertex_group = vertex_group
+                    bpy.context.scene.robust_weight_transfer_settings.inpaint_mode = 'SURFACE'
+                    bpy.context.scene.robust_weight_transfer_settings.max_distance = max_distance_try
+                    bpy.context.scene.robust_weight_transfer_settings.use_deformed_target = True
+                    bpy.context.scene.robust_weight_transfer_settings.use_deformed_source = True
+                    bpy.context.scene.robust_weight_transfer_settings.enforce_four_bone_limit = True
+                    bpy.context.scene.robust_weight_transfer_settings.max_normal_angle_difference = 1.5708
+                    #bpy.context.scene.robust_weight_transfer_settings.max_normal_angle_difference = 0.349066
+                    bpy.context.scene.robust_weight_transfer_settings.flip_vertex_normal = True
+                    bpy.context.scene.robust_weight_transfer_settings.smoothing_enable = False
+                    bpy.context.scene.robust_weight_transfer_settings.smoothing_repeat = 4
+                    bpy.context.scene.robust_weight_transfer_settings.smoothing_factor = 0.5
+                    bpy.context.object.robust_weight_transfer_settings.inpaint_group = "InpaintMask"
+                    bpy.context.object.robust_weight_transfer_settings.inpaint_threshold = 0.5
+                    bpy.context.object.robust_weight_transfer_settings.inpaint_group_invert = False
+                    bpy.context.object.robust_weight_transfer_settings.vertex_group_invert = False
+                    bpy.context.scene.robust_weight_transfer_settings.group_selection = 'DEFORM_POSE_BONES'
+                    bpy.ops.object.skin_weight_transfer()
+                    print(f"Weight transfered with max_distance {max_distance_try}, mode: SURFACE")
+                    surface_mode_weights = store_weights(target_obj, bone_groups_tmp)
+                    restore_weights(target_obj, prev_weights)
+                except RuntimeError as e:
+                    print(f"Weight transfer failed with max_distance {max_distance_try}, mode: SURFACE : {str(e)}")
+                    restore_weights(target_obj, prev_weights)
 
             try:
                 bpy.context.scene.robust_weight_transfer_settings.source_object = source_obj
@@ -16256,6 +17443,38 @@ def process_weight_transfer(target_obj, armature, base_avatar_data, clothing_ava
                 bpy.context.scene.robust_weight_transfer_settings.group_selection = 'DEFORM_POSE_BONES'
                 bpy.ops.object.skin_weight_transfer()
                 print(f"Weight transfered with max_distance {max_distance_try}")
+
+                # surface_mode_weightsとMF_Surface頂点グループが存在する場合、MF_Surfaceのウェイトにしたがってsurface_mode_weightsを現在のウェイトに合成する
+                if surface_mode_weights is not None and "MF_Surface" in target_obj.vertex_groups:
+                    mf_surface_group = target_obj.vertex_groups["MF_Surface"]
+                    print("Blending surface_mode_weights with MF_Surface weights")
+
+                    for vert in target_obj.data.vertices:
+                        # MF_Surfaceのウェイトを取得
+                        mf_surface_weight = 0.0
+                        for g in vert.groups:
+                            if g.group == mf_surface_group.index:
+                                mf_surface_weight = g.weight
+                                break
+
+                        # MF_Surfaceのウェイトが0より大きい場合のみブレンド
+                        if mf_surface_weight > 0.0 and vert.index in surface_mode_weights:
+                            # 各ボーングループのウェイトをブレンド
+                            for group_name, surface_weight in surface_mode_weights[vert.index].items():
+                                if group_name in target_obj.vertex_groups:
+                                    # 現在のウェイトを取得
+                                    current_weight = 0.0
+                                    group = target_obj.vertex_groups[group_name]
+                                    for g in vert.groups:
+                                        if g.group == group.index:
+                                            current_weight = g.weight
+                                            break
+
+                                    # ブレンド: final = current * (1 - mf) + surface * mf
+                                    blended_weight = current_weight * (1.0 - mf_surface_weight) + surface_weight * mf_surface_weight
+                                    target_obj.vertex_groups[group_name].add([vert.index], blended_weight, 'REPLACE')
+
+
                 return True, max_distance_try
             except RuntimeError as e:
                 print(f"Weight transfer failed with max_distance {max_distance_try}: {str(e)}")
@@ -16881,7 +18100,7 @@ def process_weight_transfer(target_obj, armature, base_avatar_data, clothing_ava
                 parent_humanoid_name = clothing_bone_to_humanoid[current_bone.name]
                 break
             current_bone = current_bone.parent
-        print(f"current_bone_name: {current_bone_name}, parent_humanoid_name: {parent_humanoid_name}")
+        #print(f"current_bone_name: {current_bone_name}, parent_humanoid_name: {parent_humanoid_name}")
         if parent_humanoid_name:
             clothing_bone_to_parent_humanoid[current_bone_name] = parent_humanoid_name
 
@@ -17194,41 +18413,28 @@ def process_weight_transfer(target_obj, armature, base_avatar_data, clothing_ava
     aux_bone_time = time.time() - aux_bone_time_start
     print(f"  補助ボーン処理: {aux_bone_time:.2f}秒")
 
-    # 現在のウェイトを結果Aとして保存
+    # 現在のウェイトを結果Aとして保存（target_groupsに限定）
     store_result_a_time_start = time.time()
+    group_indices = {g.index: g.name for g in target_obj.vertex_groups if g.name in target_groups}
     weights_a = {}
-    for vert_idx in range(len(target_obj.data.vertices)):
-        weights_a[vert_idx] = {}
-        for group in target_obj.vertex_groups:
-            if group.name in bone_groups:
-                try:
-                    weight = 0.0
-                    for g in target_obj.data.vertices[vert_idx].groups:
-                        if g.group == group.index:
-                            weight = g.weight
-                            break
-                    weights_a[vert_idx][group.name] = weight
-                except Exception:
-                    continue
+    for vert in target_obj.data.vertices:
+        weights = {}
+        for g in vert.groups:
+            if g.group in group_indices:
+                weights[group_indices[g.group]] = g.weight
+        weights_a[vert.index] = weights
     store_result_a_time = time.time() - store_result_a_time_start
     print(f"  結果A保存: {store_result_a_time:.2f}秒")
 
-    # 現在のウェイトをコピーして結果Bを作成
+    # 現在のウェイトをコピーして結果Bを作成（target_groupsに限定）
     store_result_b_time_start = time.time()
     weights_b = {}
-    for vert_idx in range(len(target_obj.data.vertices)):
-        weights_b[vert_idx] = {}
-        for group in target_obj.vertex_groups:
-            if group.name in bone_groups:
-                try:
-                    weight = 0.0
-                    for g in target_obj.data.vertices[vert_idx].groups:
-                        if g.group == group.index:
-                            weight = g.weight
-                            break
-                    weights_b[vert_idx][group.name] = weight
-                except Exception:
-                    continue
+    for vert in target_obj.data.vertices:
+        weights = {}
+        for g in vert.groups:
+            if g.group in group_indices:
+                weights[group_indices[g.group]] = g.weight
+        weights_b[vert.index] = weights
     store_result_b_time = time.time() - store_result_b_time_start
     print(f"  結果B保存: {store_result_b_time:.2f}秒")
 
@@ -17250,27 +18456,28 @@ def process_weight_transfer(target_obj, armature, base_avatar_data, clothing_ava
     sway_bones_time = time.time() - sway_bones_time_start
     print(f"  SwayBones処理: {sway_bones_time:.2f}秒")
 
-    # 結果AとBを合成
+    # 結果AとBを合成（target_groupsに限定）
     weight_blend_time_start = time.time()
-    for vert_idx in range(len(target_obj.data.vertices)):
+    for vert in target_obj.data.vertices:
+        vert_idx = vert.index
         # DistanceFalloffMaskのウェイトを取得
         falloff_weight = 0.0
-        for g in target_obj.data.vertices[vert_idx].groups:
+        for g in vert.groups:
             if g.group == distance_falloff_group.index:
                 falloff_weight = g.weight
                 break
 
-        # 各頂点グループについて処理
-        for group_name in bone_groups:
-            if group_name in target_obj.vertex_groups:
-                weight_a = weights_a[vert_idx].get(group_name, 0.0)
-                weight_b = weights_b[vert_idx].get(group_name, 0.0)
+        # 各頂点グループについて処理（existing_target_groupsに限定）
+        for group_name in target_groups:
+            weight_a = weights_a[vert_idx].get(group_name, 0.0)
+            weight_b = weights_b[vert_idx].get(group_name, 0.0)
 
-                # ウェイトを合成
-                final_weight = (weight_a * falloff_weight) + (weight_b * (1.0 - falloff_weight))
+            # ウェイトを合成
+            final_weight = (weight_a * falloff_weight) + (weight_b * (1.0 - falloff_weight))
 
-                # 新しいウェイトを設定
-                group = target_obj.vertex_groups[group_name]
+            # 新しいウェイトを設定
+            group = target_obj.vertex_groups.get(group_name)
+            if group:
                 if final_weight > 0:
                     group.add([vert_idx], final_weight, 'REPLACE')
                 else:
@@ -18535,7 +19742,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         if clothing_avatar_data.get("name", None) == "Template":
             print("Templateからの変換 股下の頂点グループを作成")
             current_active_object = bpy.context.view_layer.objects.active
-            template_fbx_path = clothing_avatar_data.get("defaultFBXPath", None)
+            template_fbx_path = os.path.dirname(os.path.abspath(config_pair['clothing_avatar_data'])) + "/Template.fbx"
             clothing_avatar_data_path = config_pair['clothing_avatar_data']
             # template_fbx_pathを絶対パスに変換
             if template_fbx_path and not os.path.isabs(template_fbx_path):
@@ -18573,7 +19780,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             # select_vertices_by_conditions(template_obj, "MF_crotch", clothing_avatar_data, radius=0.075, max_angle_degrees=45.0)
             # for obj in clothing_meshes:
             #     find_vertices_near_faces(template_obj, obj, "MF_crotch", 0.01)
-            crotch_vertex_group_filepath = os.path.join(os.path.dirname(template_fbx_path), "vertex_group_weights_crotch.json")
+            crotch_vertex_group_filepath = os.path.join(os.path.dirname(template_fbx_path), "vertex_group_weights_crotch2.json")
             crotch_group_name = load_vertex_group(template_obj, crotch_vertex_group_filepath)
             if crotch_group_name:
                 # LeftUpperLegとRightUpperLegボーンにY軸回転を適用
@@ -18581,53 +19788,9 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
                 bpy.context.view_layer.objects.active = template_armature
                 bpy.ops.object.mode_set(mode='POSE')
 
-                # humanoidBonesからLeftUpperLegとRightUpperLegのboneNameを取得
-                left_upper_leg_bone = None
-                right_upper_leg_bone = None
-
-                for bone_map in clothing_avatar_data.get("humanoidBones", []):
-                    if bone_map.get("humanoidBoneName") == "LeftUpperLeg":
-                        left_upper_leg_bone = bone_map.get("boneName")
-                    elif bone_map.get("humanoidBoneName") == "RightUpperLeg":
-                        right_upper_leg_bone = bone_map.get("boneName")
-
-                # LeftUpperLegボーンに-45度のY軸回転を適用
-                if left_upper_leg_bone and left_upper_leg_bone in template_armature.pose.bones:
-                    bone = template_armature.pose.bones[left_upper_leg_bone]
-                    current_world_matrix = template_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での-45度Y軸回転を適用
-                    head_world_transformed = template_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(-40), 4, 'Y')
-                    bone.matrix = template_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
-
-                # RightUpperLegボーンに45度のY軸回転を適用
-                if right_upper_leg_bone and right_upper_leg_bone in template_armature.pose.bones:
-                    bone = template_armature.pose.bones[right_upper_leg_bone]
-                    current_world_matrix = template_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での45度Y軸回転を適用
-                    head_world_transformed = template_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(40), 4, 'Y')
-                    bone.matrix = template_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
-
-                if left_upper_leg_bone and left_upper_leg_bone in clothing_armature.pose.bones:
-                    bone = clothing_armature.pose.bones[left_upper_leg_bone]
-                    current_world_matrix = clothing_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での-45度Y軸回転を適用
-                    head_world_transformed = clothing_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(-40), 4, 'Y')
-                    bone.matrix = clothing_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
-
-                if right_upper_leg_bone and right_upper_leg_bone in clothing_armature.pose.bones:
-                    bone = clothing_armature.pose.bones[right_upper_leg_bone]
-                    current_world_matrix = clothing_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での45度Y軸回転を適用
-                    head_world_transformed = clothing_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(40), 4, 'Y')
-                    bone.matrix = clothing_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
+                # 脚ボーンにY軸回転を適用（左: -40度、右: 40度）
+                apply_y_rotation_to_leg_bones(template_armature, clothing_avatar_data, -70, 70)
+                apply_y_rotation_to_leg_bones(clothing_armature, clothing_avatar_data, -70, 70)
 
                 bpy.ops.object.mode_set(mode='OBJECT')
                 bpy.context.view_layer.update()
@@ -18636,45 +19799,19 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
                     #transfer_weights_from_nearest_vertex(template_obj, obj, crotch_group_name)
                     find_vertices_near_faces(template_obj, obj, crotch_group_name, 0.01, use_all_faces=True, smooth_repeat=3)
 
-                # LeftUpperLegボーンに-45度のY軸回転を適用
-                if left_upper_leg_bone and left_upper_leg_bone in template_armature.pose.bones:
-                    bone = template_armature.pose.bones[left_upper_leg_bone]
-                    current_world_matrix = template_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での-45度Y軸回転を適用
-                    head_world_transformed = template_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(40), 4, 'Y')
-                    bone.matrix = template_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
-
-                # RightUpperLegボーンに45度のY軸回転を適用
-                if right_upper_leg_bone and right_upper_leg_bone in template_armature.pose.bones:
-                    bone = template_armature.pose.bones[right_upper_leg_bone]
-                    current_world_matrix = template_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での45度Y軸回転を適用
-                    head_world_transformed = template_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(-40), 4, 'Y')
-                    bone.matrix = template_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
-
-                if left_upper_leg_bone and left_upper_leg_bone in clothing_armature.pose.bones:
-                    bone = clothing_armature.pose.bones[left_upper_leg_bone]
-                    current_world_matrix = clothing_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での-45度Y軸回転を適用
-                    head_world_transformed = clothing_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(40), 4, 'Y')
-                    bone.matrix = clothing_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
-
-                if right_upper_leg_bone and right_upper_leg_bone in clothing_armature.pose.bones:
-                    bone = clothing_armature.pose.bones[right_upper_leg_bone]
-                    current_world_matrix = clothing_armature.matrix_world @ bone.matrix
-                    # グローバル座標系での45度Y軸回転を適用
-                    head_world_transformed = clothing_armature.matrix_world @ bone.head
-                    offset_matrix = mathutils.Matrix.Translation(head_world_transformed * -1.0)
-                    rotation_matrix = mathutils.Matrix.Rotation(math.radians(-40), 4, 'Y')
-                    bone.matrix = clothing_armature.matrix_world.inverted() @ offset_matrix.inverted() @ rotation_matrix @ offset_matrix @ current_world_matrix
+                # 脚ボーンの回転を戻す（左: 40度、右: -40度）
+                apply_y_rotation_to_leg_bones(template_armature, clothing_avatar_data, 70, -70)
+                apply_y_rotation_to_leg_bones(clothing_armature, clothing_avatar_data, 70, -70)
 
                 bpy.context.view_layer.update()
+
+
+            crotch3_vertex_group_filepath = os.path.join(os.path.dirname(template_fbx_path), "vertex_group_weights_crotch3.json")
+            crotch3_group_name = load_vertex_group(template_obj, crotch3_vertex_group_filepath)
+            if crotch3_group_name:
+                for obj in clothing_meshes:
+                    #transfer_weights_x_projection(template_obj, obj, crotch3_group_name, "MF_crotch")
+                    transfer_weights_x_projection(template_obj, obj, crotch3_group_name, "MF_crotch3")
 
             blur_vertex_group_filepath = os.path.join(os.path.dirname(template_fbx_path), "vertex_group_weights_blur.json")
             blur_group_name = load_vertex_group(template_obj, blur_vertex_group_filepath)
@@ -18686,6 +19823,11 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             if inpaint_group_name:
                 for obj in clothing_meshes:
                     transfer_weights_from_nearest_vertex(template_obj, obj, inpaint_group_name)
+            surface_vertex_group_filepath = os.path.join(os.path.dirname(template_fbx_path), "vertex_group_weights_surface.json")
+            surface_group_name = load_vertex_group(template_obj, surface_vertex_group_filepath)
+            if surface_group_name:
+                for obj in clothing_meshes:
+                    transfer_weights_from_nearest_vertex(template_obj, obj, surface_group_name)
             bpy.data.objects.remove(bpy.data.objects["Body.Template"], do_unlink=True)
             bpy.data.objects.remove(bpy.data.objects["Body.Template.Eyes"], do_unlink=True)
             bpy.data.objects.remove(bpy.data.objects["Body.Template.Head"], do_unlink=True)
@@ -18696,7 +19838,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         # Apply BlendShape Deformation Fields before pose application
         print("Status: BlendShape用 Deformation Field適用中")
         print(f"Progress: {(pair_index + 0.33) / total_pairs * 0.9:.3f}")
-        blend_shape_labels = config_pair['blend_shapes'].split(',') if config_pair['blend_shapes'] else None
+        blend_shape_labels = config_pair['blend_shapes'].split(';') if config_pair['blend_shapes'] else None
         if blend_shape_labels:
             for obj in clothing_meshes:
                 reset_shape_keys(obj)
@@ -18728,6 +19870,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         propagated_groups_map = {}  # メッシュごとの伝播記録用グループ名を記録
         field_distance_groups = {}  # 各メッシュのフィールド距離頂点グループを記録
         cycle1_start = time.time()
+        head_parts = set()
         for obj in clothing_meshes:
             obj_start = time.time()
             print("cycle1 " + obj.name)
@@ -18758,6 +19901,11 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
                         continue
             cleanup_weights_time = time.time() - cleanup_weights_time_start
             print(f"  微小ウェイト除外: {cleanup_weights_time:.2f}秒")
+
+            if is_head_part(obj, clothing_avatar_data):
+                head_parts.add(obj.name)
+                print(f"  {obj.name} is head part")
+                continue
 
             create_deformation_mask(obj, clothing_avatar_data)
 
@@ -18905,12 +20053,6 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
                 for obj in clothing_meshes:
                     find_vertices_near_faces(base_mesh, obj, armpit_group_name2, 0.1, 45.0)
         if base_avatar_data.get("name", None) == "Template":
-            crotch_vertex_group_filepath2 = os.path.join(os.path.dirname(config_pair['base_fbx']), "vertex_group_weights_crotch2.json")
-            crotch_group_name2 = load_vertex_group(base_mesh, crotch_vertex_group_filepath2)
-            if crotch_group_name2:
-                for obj in clothing_meshes:
-                    # transfer_weights_from_nearest_vertex(base_mesh, obj, crotch_group_name2)
-                    find_vertices_near_faces(base_mesh, obj, crotch_group_name2, 0.01, smooth_repeat=3)
             blur_vertex_group_filepath2 = os.path.join(os.path.dirname(config_pair['base_fbx']), "vertex_group_weights_blur.json")
             blur_group_name2 = load_vertex_group(base_mesh, blur_vertex_group_filepath2)
             if blur_group_name2:
@@ -18921,22 +20063,44 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             if inpaint_group_name2  :
                 for obj in clothing_meshes:
                     transfer_weights_from_nearest_vertex(base_mesh, obj, inpaint_group_name2)
+            surface_vertex_group_filepath2 = os.path.join(os.path.dirname(config_pair['base_fbx']), "vertex_group_weights_surface.json")
+            surface_group_name2 = load_vertex_group(base_mesh, surface_vertex_group_filepath2)
+            if surface_group_name2  :
+                for obj in clothing_meshes:
+                    transfer_weights_from_nearest_vertex(base_mesh, obj, surface_group_name2)
+
+        for obj in clothing_meshes:
+            armature_settings = store_armature_modifier_settings(obj)
+            armature_settings_dict[obj] = armature_settings
+            generate_temp_shapekeys_for_weight_transfer(obj, clothing_armature, clothing_avatar_data, base_armature, base_avatar_data, _is_A_pose)
+
+        if base_avatar_data.get("name", None) == "Template":
+            crotch_vertex_group_filepath = os.path.join(os.path.dirname(config_pair['base_fbx']), "vertex_group_weights_crotch.json")
+            crotch_group_name = load_vertex_group(base_mesh, crotch_vertex_group_filepath)
+            if crotch_group_name:
+                apply_y_rotation_to_leg_bones(base_armature, base_avatar_data, -70, 70)
+                for obj in clothing_meshes:
+                    if obj.data.shape_keys and "WT_shape_forCrotch.MFTemp" in obj.data.shape_keys.key_blocks:
+                        obj.data.shape_keys.key_blocks["WT_shape_forCrotch.MFTemp"].value = 1.0
+                        find_vertices_near_faces(base_mesh, obj, crotch_group_name, 0.01, smooth_repeat=3)
+                        obj.data.shape_keys.key_blocks["WT_shape_forCrotch.MFTemp"].value = 0.0
+                apply_y_rotation_to_leg_bones(base_armature, base_avatar_data, 70, -70)
+            crotch3_vertex_group_filepath = os.path.join(os.path.dirname(config_pair['base_fbx']), "vertex_group_weights_crotch3.json")
+            crotch3_group_name = load_vertex_group(base_mesh, crotch3_vertex_group_filepath)
+            if crotch3_group_name:
+                for obj in clothing_meshes:
+                    #transfer_weights_x_projection(base_mesh, obj, crotch3_group_name, "MF_crotch")
+                    transfer_weights_x_projection(base_mesh, obj, crotch3_group_name, "MF_crotch3")
 
         for obj in clothing_meshes:
             obj_start = time.time()
             print("cycle2 (pre-weight transfer) " + obj.name)
 
-            # Store armature modifier settings
-            armature_settings = store_armature_modifier_settings(obj)
-            armature_settings_dict[obj] = armature_settings
-
             # Apply modifiers and process humanoid vertex groups (これらは個別に適用)
             #apply_modifiers_keep_shapekeys_with_temp(obj)
-            generate_temp_shapekeys_for_weight_transfer(obj, clothing_armature, clothing_avatar_data, _is_A_pose)
+
             process_missing_bone_weights(obj, base_armature, clothing_avatar_data, base_avatar_data, preserve_optional_humanoid_bones=False)
             process_humanoid_vertex_groups(obj, clothing_armature, base_avatar_data, clothing_avatar_data)
-            # if clothing_avatar_data.get("name", None) != "Template":
-            #     find_vertices_near_faces(base_mesh, obj, "MF_crotch", 0.01)
             restore_armature_modifier(obj, armature_settings_dict[obj])
             set_armature_modifier_visibility(obj, False, False)
             set_armature_modifier_target_armature(obj, base_armature)
@@ -18961,22 +20125,23 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
                 contained_objects = containing_objects[obj]
                 print(f"{obj.name} contains {contained_objects} other objects within distance 0.02 - applying joint weight transfer")
 
-                # 一時的に結合してweight transfer処理のみを適用
-                temporarily_merge_for_weight_transfer(
-                    obj,
-                    contained_objects,
-                    base_armature,
-                    base_avatar_data,
-                    clothing_avatar_data,
-                    config_pair['field_data'],
-                    clothing_armature,
-                    config_pair.get('next_blendshape_settings', []),
-                    cloth_metadata
-                )
+                if not is_head_part(obj, base_avatar_data):
+                    # 一時的に結合してweight transfer処理のみを適用
+                    temporarily_merge_for_weight_transfer(
+                        obj,
+                        contained_objects,
+                        base_armature,
+                        base_avatar_data,
+                        clothing_avatar_data,
+                        config_pair['field_data'],
+                        clothing_armature,
+                        config_pair.get('next_blendshape_settings', []),
+                        cloth_metadata
+                    )
 
-                # 処理済みとしてマーク
-                weight_transfer_processed.add(obj)
-                weight_transfer_processed.update(contained_objects)
+                    # 処理済みとしてマーク
+                    weight_transfer_processed.add(obj)
+                    weight_transfer_processed.update(contained_objects)
             print(f"  {obj.name}の包含ウェイト転送: {time.time() - obj_start:.2f}秒")
 
         for obj in clothing_meshes:
@@ -18987,7 +20152,8 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
             print(f"Applying individual weight transfer to {obj.name}")
             # Weight transfer
             # process_weight_transfer(obj, base_armature, base_avatar_data, config_pair['field_data'], clothing_armature, cloth_metadata)
-            process_weight_transfer_with_component_normalization(obj, base_armature, base_avatar_data, clothing_avatar_data, config_pair['field_data'], clothing_armature, config_pair.get('next_blendshape_settings', []), cloth_metadata)
+            if not is_head_part(obj, base_avatar_data):
+                process_weight_transfer_with_component_normalization(obj, base_armature, base_avatar_data, clothing_avatar_data, config_pair['field_data'], clothing_armature, config_pair.get('next_blendshape_settings', []), cloth_metadata)
 
             # 処理済みとしてマーク
             weight_transfer_processed.add(obj)
@@ -19117,7 +20283,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         # blend_shape_labelsの取得
         blend_shape_labels = []
         if args.blend_shapes:
-            blend_shape_labels = [label for label in args.blend_shapes.split(',')]
+            blend_shape_labels = [label for label in args.blend_shapes.split(';')]
 
         for obj in clothing_meshes:
             if obj.data.shape_keys:
@@ -19186,7 +20352,7 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print(f"FBXエクスポート: {export_end - export_start:.2f}秒")
 
         # Save the current scene
-        # if pair_index == 1:
+        # if pair_index == 0:
         #     save_start = time.time()
         #     output_blend = args.output.rsplit('.', 1)[0] + '.blend'
         #     bpy.ops.wm.save_as_mainfile(filepath=output_blend)
