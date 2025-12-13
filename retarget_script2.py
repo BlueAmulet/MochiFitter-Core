@@ -1575,6 +1575,7 @@ def parse_args():
     parser.add_argument('--blend-shape-mappings', type=str, help='Semicolon-separated mappings of label,customName pairs')
     parser.add_argument('--name-conv', type=str, help='Path to bone name conversion JSON file')
     parser.add_argument('--mesh-renderers', type=str, help='Semicolon-separated list of meshObject,parentObject pairs')
+    parser.add_argument('--shape-name-file', type=str, help='Path to JSON file containing BlendShape names per mesh')
 
     print(sys.argv)
 
@@ -1803,6 +1804,11 @@ def parse_args():
 
     # Store configuration pairs in args for later use
     args.config_pairs = config_pairs
+
+    # Store shape name file path in the first config pair
+    if len(config_pairs) > 0 and args.shape_name_file:
+        config_pairs[0]['shape_name_filepath'] = args.shape_name_file
+        print(f"Shape name file path set: {args.shape_name_file}")
 
     # Parse hips position if provided
     if args.hips_position:
@@ -2491,7 +2497,7 @@ def adjust_armature_hips_position(armature_obj: bpy.types.Object, target_positio
     # ビューを更新
     bpy.context.view_layer.update()
 
-def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=None, target_meshes=None, mesh_renderers=None):
+def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=None, target_meshes=None, mesh_renderers=None, name_conv_data=None):
     """Process clothing avatar."""
 
     original_active = bpy.context.view_layer.objects.active
@@ -2595,13 +2601,48 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
         print(f"Multiple armatures found: {[arm.name for arm in armatures_from_meshes]}")
         humanoid_and_aux_bones = get_humanoid_and_auxiliary_bones(clothing_avatar_data)
 
+        # name_conv_dataからボーン名変換マッピングを作成（fbxBone -> prefabBone）
+        bone_name_conversion = {}
+        if name_conv_data and 'boneMapping' in name_conv_data:
+            for mapping in name_conv_data['boneMapping']:
+                fbx_bone = mapping.get('fbxBone')
+                prefab_bone = mapping.get('prefabBone')
+                if fbx_bone and prefab_bone and fbx_bone != prefab_bone:
+                    bone_name_conversion[fbx_bone] = prefab_bone
+
+        # clothing_avatar_dataからHipsボーン名を取得
+        hips_bone_name = None
+        for bone_map in clothing_avatar_data.get("humanoidBones", []):
+            if bone_map.get("humanoidBoneName") == "Hips":
+                hips_bone_name = bone_map.get("boneName")
+                break
+
+        # Hipsボーンを含むArmatureのみをフィルタリング
+        armatures_with_hips = []
+        if hips_bone_name:
+            for armature in armatures_from_meshes:
+                # ボーン名を変換マッピングに従って変換して評価
+                armature_bone_names_converted = {bone_name_conversion.get(bone.name, bone.name) for bone in armature.data.bones}
+                if hips_bone_name in armature_bone_names_converted:
+                    armatures_with_hips.append(armature)
+                    print(f"Armature '{armature.name}' contains Hips bone")
+                else:
+                    print(f"Armature '{armature.name}' does NOT contain Hips bone - excluded")
+
+            if armatures_with_hips:
+                armatures_from_meshes = set(armatures_with_hips)
+            else:
+                print("Warning: No armature contains Hips bone, using all armatures")
+
         best_armature = None
         best_match_count = -1
 
         for armature in armatures_from_meshes:
             match_count = 0
             for bone in armature.data.bones:
-                if bone.name in humanoid_and_aux_bones:
+                # ボーン名を変換マッピングに従って一時的に変換して評価
+                converted_bone_name = bone_name_conversion.get(bone.name, bone.name)
+                if converted_bone_name in humanoid_and_aux_bones:
                     match_count += 1
 
             print(f"Armature '{armature.name}': {match_count} matching bones")
@@ -2655,8 +2696,8 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
         clothing_meshes = filtered_meshes
 
     # Set hips position if provided
-    if hips_position:
-        adjust_armature_hips_position(clothing_armature, hips_position, clothing_avatar_data)
+    # if hips_position:
+    #     adjust_armature_hips_position(clothing_armature, hips_position, clothing_avatar_data)
 
     # Process mesh renderers if provided
     if mesh_renderers:
@@ -2723,6 +2764,232 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
     bpy.context.view_layer.objects.active = original_active
 
     return clothing_meshes, clothing_armature, clothing_avatar_data
+
+
+def sync_shape_key_names_from_file(clothing_meshes: list, shape_name_filepath: str) -> None:
+    """
+    shape_name_filepathから読み込んだブレンドシェイプ名と、clothing_meshesのシェイプキー名を同期する。
+    ファイル中のブレンドシェイプ名にピリオドが含まれている場合、最初のピリオドの後の部分と
+    対象メッシュのシェイプキー名が一致する場合、シェイプキー名をファイル中の元のブレンドシェイプ名に変更する。
+
+    Parameters:
+        clothing_meshes: 処理対象のメッシュオブジェクトのリスト
+        shape_name_filepath: BlendShape名が記録されたJSONファイルのパス
+    """
+    if not shape_name_filepath or not os.path.exists(shape_name_filepath):
+        print(f"Shape name file not found: {shape_name_filepath}")
+        return
+
+    try:
+        # JSONファイルを読み込み
+        with open(shape_name_filepath, 'r', encoding='utf-8') as f:
+            shape_name_data = json.load(f)
+
+        print(f"Loaded shape name data from: {shape_name_filepath}")
+
+        for mesh_obj in clothing_meshes:
+            if mesh_obj.type != 'MESH':
+                continue
+
+            mesh_name = mesh_obj.name
+
+            # ファイル中にこのメッシュ名が存在するか確認
+            if mesh_name not in shape_name_data:
+                print(f"  Mesh '{mesh_name}' not found in shape name file, skipping.")
+                continue
+
+            file_shape_names = shape_name_data[mesh_name]
+
+            # メッシュにシェイプキーがない場合はスキップ
+            if not mesh_obj.data.shape_keys or not mesh_obj.data.shape_keys.key_blocks:
+                print(f"  Mesh '{mesh_name}' has no shape keys, skipping.")
+                continue
+
+            shape_keys = mesh_obj.data.shape_keys.key_blocks
+
+            # 現在のシェイプキー名のセットを作成
+            current_shape_names = {sk.name for sk in shape_keys}
+
+            # ファイル中のブレンドシェイプ名のセットを作成
+            file_shape_names_set = set(file_shape_names)
+
+            # Basis以外で一致しないものを探す
+            for file_shape_name in file_shape_names:
+                if file_shape_name == 'Basis':
+                    continue
+
+                # ファイル中の名前が現在のシェイプキーに存在する場合はスキップ
+                if file_shape_name in current_shape_names:
+                    continue
+
+                # ピリオドが含まれている場合、最初のピリオドの後の部分を取得
+                if '.' in file_shape_name:
+                    after_period = file_shape_name.split('.', 1)[1]
+
+                    # 現在のシェイプキーの中で一致するものを探す
+                    for shape_key in shape_keys:
+                        if shape_key.name == 'Basis':
+                            continue
+
+                        if shape_key.name == after_period:
+                            # シェイプキー名を元のブレンドシェイプ名に変更
+                            old_name = shape_key.name
+                            shape_key.name = file_shape_name
+                            print(f"  Renamed shape key '{old_name}' to '{file_shape_name}' in mesh '{mesh_name}'")
+                            break
+
+        print("Shape key name synchronization completed.")
+
+    except Exception as e:
+        print(f"Error syncing shape key names: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def fix_invalid_vertex_weights(clothing_meshes: list) -> None:
+    """
+    メッシュオブジェクトの頂点ウェイトで数値がfiniteでないかNaNであるものを0に設定し、
+    すべてのボーンウェイトがなくなった頂点に対して、エッジを2つまで辿って有効なウェイトをコピーする。
+
+    Parameters:
+        clothing_meshes: 処理対象のメッシュオブジェクトのリスト
+    """
+    import bmesh
+
+    for mesh_obj in clothing_meshes:
+        if mesh_obj.type != 'MESH':
+            continue
+
+        print(f"Fixing invalid vertex weights for mesh: {mesh_obj.name}")
+
+        mesh = mesh_obj.data
+        vertex_groups = mesh_obj.vertex_groups
+
+        if len(vertex_groups) == 0:
+            print(f"  No vertex groups found in {mesh_obj.name}, skipping.")
+            continue
+
+        # ステップ1: 無効なウェイト値を0に設定し、ウェイトがなくなった頂点を追跡
+        vertices_without_weights = set()
+        invalid_weight_count = 0
+
+        for vert in mesh.vertices:
+            has_valid_weight = False
+
+            for g in vert.groups:
+                weight = g.weight
+                # finiteでないかNaNをチェック
+                if not math.isfinite(weight) or math.isnan(weight):
+                    # 無効なウェイトを0に設定
+                    group_name = vertex_groups[g.group].name
+                    vertex_groups[group_name].add([vert.index], 0.0, 'REPLACE')
+                    invalid_weight_count += 1
+                elif weight > 0.0:
+                    has_valid_weight = True
+
+            if not has_valid_weight:
+                vertices_without_weights.add(vert.index)
+
+        print(f"  Fixed {invalid_weight_count} invalid weight values in {mesh_obj.name}")
+        print(f"  Found {len(vertices_without_weights)} vertices without valid weights")
+
+        if len(vertices_without_weights) == 0:
+            continue
+
+        # ステップ2: BMeshを使ってエッジの接続情報を取得
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+
+        # 頂点のエッジ接続情報を構築
+        def get_adjacent_vertices(vert_idx: int) -> set:
+            """指定した頂点に隣接する頂点のインデックスを取得"""
+            adjacent = set()
+            bm_vert = bm.verts[vert_idx]
+            for edge in bm_vert.link_edges:
+                other_vert = edge.other_vert(bm_vert)
+                adjacent.add(other_vert.index)
+            return adjacent
+
+        def get_vertex_weights(vert_idx: int) -> dict:
+            """頂点のウェイト情報を取得"""
+            weights = {}
+            vert = mesh.vertices[vert_idx]
+            for g in vert.groups:
+                weight = g.weight
+                if math.isfinite(weight) and not math.isnan(weight) and weight > 0.0:
+                    group_name = vertex_groups[g.group].name
+                    weights[group_name] = weight
+            return weights
+
+        def has_valid_weights(vert_idx: int) -> bool:
+            """頂点が有効なウェイトを持っているかチェック"""
+            vert = mesh.vertices[vert_idx]
+            for g in vert.groups:
+                weight = g.weight
+                if math.isfinite(weight) and not math.isnan(weight) and weight > 0.0:
+                    return True
+            return False
+
+        # ステップ3: ウェイトがない頂点に対して、2ステップまでエッジを辿ってウェイトをコピー
+        fixed_vertices_count = 0
+
+        for vert_idx in vertices_without_weights:
+            # 1ステップ目の隣接頂点を探す
+            first_level_neighbors = get_adjacent_vertices(vert_idx)
+
+            # 1ステップ目で有効なウェイトを持つ頂点を探す
+            valid_neighbors = []
+            for neighbor_idx in first_level_neighbors:
+                if has_valid_weights(neighbor_idx):
+                    valid_neighbors.append((neighbor_idx, 1))  # (index, distance)
+
+            # 1ステップ目で見つからなければ、2ステップ目を探す
+            if not valid_neighbors:
+                second_level_neighbors = set()
+                for neighbor_idx in first_level_neighbors:
+                    second_level = get_adjacent_vertices(neighbor_idx)
+                    # 元の頂点と1ステップ目の頂点を除外
+                    second_level_neighbors.update(second_level - {vert_idx} - first_level_neighbors)
+
+                for neighbor_idx in second_level_neighbors:
+                    if has_valid_weights(neighbor_idx):
+                        valid_neighbors.append((neighbor_idx, 2))  # (index, distance)
+
+            if not valid_neighbors:
+                print(f"  Warning: Could not find valid weights for vertex {vert_idx} within 2 edge steps")
+                continue
+
+            # 最も近い（最初に見つかった）隣接頂点からウェイトをコピー
+            # 同じ距離の複数の頂点がある場合は平均を取る
+            min_distance = min(n[1] for n in valid_neighbors)
+            closest_neighbors = [n[0] for n in valid_neighbors if n[1] == min_distance]
+
+            # 複数の隣接頂点からウェイトを収集して平均化
+            combined_weights = {}
+            for neighbor_idx in closest_neighbors:
+                neighbor_weights = get_vertex_weights(neighbor_idx)
+                for group_name, weight in neighbor_weights.items():
+                    if group_name not in combined_weights:
+                        combined_weights[group_name] = []
+                    combined_weights[group_name].append(weight)
+
+            # 平均ウェイトを計算して設定
+            for group_name, weight_list in combined_weights.items():
+                avg_weight = sum(weight_list) / len(weight_list)
+                if group_name in vertex_groups:
+                    vertex_groups[group_name].add([vert_idx], avg_weight, 'REPLACE')
+
+            if combined_weights:
+                fixed_vertices_count += 1
+
+        bm.free()
+
+        print(f"  Copied weights to {fixed_vertices_count} vertices from neighboring vertices in {mesh_obj.name}")
+
+    print("Finished fixing invalid vertex weights for all meshes")
+
 
 def setup_weight_transfer() -> None:
     """Setup the Robust Weight Transfer plugin settings."""
@@ -3341,6 +3608,25 @@ def remove_empty_vertex_groups(mesh_obj: bpy.types.Object) -> None:
         for g in vert.groups:
             if g.weight > 0.0005:
                 used_vertex_groups[g.group] = True
+
+    # メッシュ全体の頂点数が500より大きい場合、追加のチェックを行う
+    total_vertex_count = len(mesh_obj.data.vertices)
+    if total_vertex_count > 500:
+        # 各グループごとに頂点数とウェイトを記録
+        group_vertex_info = {i: [] for i in range(len(mesh_obj.vertex_groups))}
+        for vert in mesh_obj.data.vertices:
+            for g in vert.groups:
+                if g.weight > 0:  # 0より大きいウェイトを持つ頂点のみ記録
+                    group_vertex_info[g.group].append(g.weight)
+
+        # 登録頂点数が4以下で、全てのウェイトが0.01以下の場合はFalseにする
+        for group_idx, weights in group_vertex_info.items():
+            if len(weights) <= 4 and len(weights) > 0:
+                if all(w <= 0.01 for w in weights):
+                    if used_vertex_groups[group_idx]:
+                        group_name = mesh_obj.vertex_groups[group_idx].name
+                        print(f"Marking vertex group as unused (low vertex count and weights): {group_name}")
+                    used_vertex_groups[group_idx] = False
 
     groups_to_remove = []
 
@@ -4359,9 +4645,6 @@ def create_hinge_bone_group(obj: bpy.types.Object, armature: bpy.types.Object, a
         bone = armature.pose.bones.get(bone_name)
         if bone.parent and bone.parent.name in bone_groups:
             group_index = obj.vertex_groups.find(bone_name)
-            print(f"Processing hinge bone: {bone_name}")
-            print(f"Bone parent: {bone.parent.name}")
-            print(f"Group index: {group_index}")
             if group_index != -1:
                 bone_head = armature.matrix_world @ bone.head
                 neighbor_indices = kdtree.query_ball_point(bone_head, 0.01)
@@ -6362,7 +6645,7 @@ def get_child_bones_recursive(bone_name: str, armature_obj: bpy.types.Object, cl
     bone = armature_obj.data.bones[bone_name]
     for child in bone.children:
         # 最初に指定されたボーンではないHumanoidボーンの場合、そのボーンとその子ボーンを除外
-        if not is_root and child.name in humanoid_bones:
+        if child.name in humanoid_bones:
             # このボーンとその子ボーンをスキップ
             continue
 
@@ -6435,8 +6718,6 @@ def create_blendshape_mask(target_obj, mask_bones, clothing_avatar_data, field_n
                 processed_bones.add(aux_bone)
                 # 補助ボーンの子ボーンを追加
                 target_bones.update(get_child_bones_recursive(aux_bone, armature_obj, clothing_avatar_data))
-
-    #print(f"target_bones: {target_bones}")
 
     # 各頂点のウェイトを計算
     target_groups = {g.index for g in target_obj.vertex_groups if g.name in target_bones}
@@ -11055,7 +11336,7 @@ def transfer_weights_from_nearest_vertex(base_mesh, target_obj, vertex_group_nam
 
         # 素体メッシュ上の最近傍面を検索
         nearest_result = bvh_tree.find_nearest(cloth_vert_world)
-        if nearest_result:
+        if nearest_result and len(nearest_result) == 4 and nearest_result[0] is not None and nearest_result[1] is not None and nearest_result[2] is not None:
             # BVHTree.find_nearest() は (co, normal, index, distance) を返す
             nearest_point, nearest_normal, nearest_face_index, _ = nearest_result
 
@@ -16146,7 +16427,9 @@ def run_smoothing_processor(temp_file_path: str, multi_group: bool = False,
 
         # マルチスレッド用環境変数
         if max_workers is None:
-            max_workers = os.cpu_count()
+            max_workers = os.cpu_count() - 1
+        if max_workers < 1:
+            max_workers = 1
         env['OMP_NUM_THREADS'] = str(max_workers)
         env['OPENBLAS_NUM_THREADS'] = str(max_workers)
         env['MKL_NUM_THREADS'] = str(max_workers)
@@ -17029,7 +17312,7 @@ def apply_distance_normal_based_smoothing(body_obj, cloth_obj, distance_min=0.0,
         success, output, error = run_smoothing_processor(
             temp_file_path=temp_file,
             multi_group=True,
-            max_workers=os.cpu_count()
+            max_workers=os.cpu_count() - 1
         )
     else:
         print(f"  頂点数が3000未満({len(vertex_coords)}頂点)のため、フォールバック処理を使用します...")
@@ -19653,13 +19936,31 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         # Process clothing avatar
         print("Status: 衣装データ処理中")
         print(f"Progress: {(pair_index + 0.15) / total_pairs * 0.9:.3f}")
+
+        # Load bone name conversion data if provided (for armature selection and bone renaming)
+        name_conv_data = None
+        if pair_index == 0 and hasattr(args, 'name_conv') and args.name_conv:
+            try:
+                with open(args.name_conv, 'r', encoding='utf-8') as f:
+                    name_conv_data = json.load(f)
+            except Exception as e:
+                print(f"Warning: ボーン名前変更データの読み込みでエラーが発生しました: {e}")
+
         clothing_meshes, clothing_armature, clothing_avatar_data = process_clothing_avatar(
             config_pair['input_clothing_fbx_path'],
             config_pair['clothing_avatar_data'],
             config_pair['hips_position'],
             config_pair['target_meshes'],
-            config_pair['mesh_renderers']
+            config_pair['mesh_renderers'],
+            name_conv_data
         )
+
+        # shape_name_filepathがある場合、シェイプキー名を同期
+        if config_pair.get('shape_name_filepath'):
+            sync_shape_key_names_from_file(clothing_meshes, config_pair['shape_name_filepath'])
+
+        if pair_index == 0:
+            fix_invalid_vertex_weights(clothing_meshes)
 
         # ブレンドシェイプマッピングに基づいてシェイプキー名を変換
         if config_pair.get('blend_shape_mappings'):
@@ -19670,6 +19971,17 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
 
         clothing_process_time = time.time()
         print(f"衣装データ処理: {clothing_process_time - base_load_time:.2f}秒")
+
+        # Apply bone name conversion if provided
+        if name_conv_data:
+            try:
+                apply_bone_name_conversion(clothing_armature, clothing_meshes, name_conv_data)
+                print(f"ボーン名前変更処理完了: {args.name_conv}")
+            except Exception as e:
+                print(f"Warning: ボーン名前変更処理でエラーが発生しました: {e}")
+
+        if config_pair['hips_position']:
+            adjust_armature_hips_position(clothing_armature, config_pair['hips_position'], clothing_avatar_data)
 
         global _is_A_pose
         if pair_index == 0:
@@ -19710,6 +20022,33 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         else:
             material_load_time = metadata_load_time
 
+        # clothing_meshesの独立頂点とnon-finite頂点を削除
+        for mesh_obj in clothing_meshes:
+            if mesh_obj.type != 'MESH':
+                continue
+            mesh = mesh_obj.data
+            bm = bmesh.new()
+            bm.from_mesh(mesh)
+
+            # 独立頂点（エッジも面も構成しない頂点）をカウント
+            loose_verts = [v for v in bm.verts if len(v.link_edges) == 0]
+
+            # 1000個以上の場合は削除
+            if len(loose_verts) >= 1000:
+                print(f"Removing {len(loose_verts)} loose vertices from {mesh_obj.name}")
+                for v in loose_verts:
+                    bm.verts.remove(v)
+
+            # 座標がfiniteでない頂点を削除
+            non_finite_verts = [v for v in bm.verts if not (math.isfinite(v.co.x) and math.isfinite(v.co.y) and math.isfinite(v.co.z))]
+            if non_finite_verts:
+                print(f"Removing {len(non_finite_verts)} non-finite vertices from {mesh_obj.name}")
+                for v in non_finite_verts:
+                    bm.verts.remove(v)
+
+            bm.to_mesh(mesh)
+            bm.free()
+
         # Setup weight transfer
         print("Status: ウェイト転送セットアップ中")
         print(f"Progress: {(pair_index + 0.25) / total_pairs * 0.9:.3f}")
@@ -19720,16 +20059,6 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print("Status: ベースアバターウェイト更新中")
         print(f"Progress: {(pair_index + 0.3) / total_pairs * 0.9:.3f}")
         remove_empty_vertex_groups(base_mesh)
-
-        # Apply bone name conversion if provided
-        if pair_index == 0 and hasattr(args, 'name_conv') and args.name_conv:
-            try:
-                with open(args.name_conv, 'r', encoding='utf-8') as f:
-                    name_conv_data = json.load(f)
-                apply_bone_name_conversion(clothing_armature, clothing_meshes, name_conv_data)
-                print(f"ボーン名前変更処理完了: {args.name_conv}")
-            except Exception as e:
-                print(f"Warning: ボーン名前変更処理でエラーが発生しました: {e}")
 
         # Normalize clothing bone names before weight updates
         normalize_clothing_bone_names(clothing_armature, clothing_avatar_data, clothing_meshes)
@@ -20108,8 +20437,6 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
 
         cycle2_pre_end = time.time()
         print(f"サイクル2前処理全体: {cycle2_pre_end - cycle2_pre_start:.2f}秒")
-
-        print(f"config_pair.get('next_blendshape_settings', []): {config_pair.get('next_blendshape_settings', [])}")
 
         # Weight transfer処理（包含関係を考慮）
         print("Status: サイクル2ウェイト転送中")
