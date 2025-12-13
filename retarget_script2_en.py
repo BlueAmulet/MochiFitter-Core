@@ -1575,6 +1575,7 @@ def parse_args():
     parser.add_argument('--blend-shape-mappings', type=str, help='Semicolon-separated mappings of label,customName pairs')
     parser.add_argument('--name-conv', type=str, help='Path to bone name conversion JSON file')
     parser.add_argument('--mesh-renderers', type=str, help='Semicolon-separated list of meshObject,parentObject pairs')
+    parser.add_argument('--shape-name-file', type=str, help='Path to JSON file containing BlendShape names per mesh')
 
     print(sys.argv)
 
@@ -1803,6 +1804,11 @@ def parse_args():
 
     # Store configuration pairs in args for later use
     args.config_pairs = config_pairs
+
+    # Store shape name file path in the first config pair
+    if len(config_pairs) > 0 and args.shape_name_file:
+        config_pairs[0]['shape_name_filepath'] = args.shape_name_file
+        print(f"Shape name file path set: {args.shape_name_file}")
 
     # Parse hips position if provided
     if args.hips_position:
@@ -2491,7 +2497,7 @@ def adjust_armature_hips_position(armature_obj: bpy.types.Object, target_positio
     # Refresh View
     bpy.context.view_layer.update()
 
-def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=None, target_meshes=None, mesh_renderers=None):
+def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=None, target_meshes=None, mesh_renderers=None, name_conv_data=None):
     """Process clothing avatar."""
 
     original_active = bpy.context.view_layer.objects.active
@@ -2595,13 +2601,48 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
         print(f"Multiple armatures found: {[arm.name for arm in armatures_from_meshes]}")
         humanoid_and_aux_bones = get_humanoid_and_auxiliary_bones(clothing_avatar_data)
 
+        # Create bone name conversion mapping from name_conv_data (fbxBone -> prefabBone)
+        bone_name_conversion = {}
+        if name_conv_data and 'boneMapping' in name_conv_data:
+            for mapping in name_conv_data['boneMapping']:
+                fbx_bone = mapping.get('fbxBone')
+                prefab_bone = mapping.get('prefabBone')
+                if fbx_bone and prefab_bone and fbx_bone != prefab_bone:
+                    bone_name_conversion[fbx_bone] = prefab_bone
+
+        # Get the Hips bone name from clothing_avatar_data
+        hips_bone_name = None
+        for bone_map in clothing_avatar_data.get("humanoidBones", []):
+            if bone_map.get("humanoidBoneName") == "Hips":
+                hips_bone_name = bone_map.get("boneName")
+                break
+
+        # Filter only the Armature containing the Hips bone
+        armatures_with_hips = []
+        if hips_bone_name:
+            for armature in armatures_from_meshes:
+                # Convert the bone name according to the conversion mapping and evaluate it
+                armature_bone_names_converted = {bone_name_conversion.get(bone.name, bone.name) for bone in armature.data.bones}
+                if hips_bone_name in armature_bone_names_converted:
+                    armatures_with_hips.append(armature)
+                    print(f"Armature '{armature.name}' contains Hips bone")
+                else:
+                    print(f"Armature '{armature.name}' does NOT contain Hips bone - excluded")
+
+            if armatures_with_hips:
+                armatures_from_meshes = set(armatures_with_hips)
+            else:
+                print("Warning: No armature contains Hips bone, using all armatures")
+
         best_armature = None
         best_match_count = -1
 
         for armature in armatures_from_meshes:
             match_count = 0
             for bone in armature.data.bones:
-                if bone.name in humanoid_and_aux_bones:
+                # Temporarily convert the bone name according to the mapping and evaluate it
+                converted_bone_name = bone_name_conversion.get(bone.name, bone.name)
+                if converted_bone_name in humanoid_and_aux_bones:
                     match_count += 1
 
             print(f"Armature '{armature.name}': {match_count} matching bones")
@@ -2655,8 +2696,8 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
         clothing_meshes = filtered_meshes
 
     # Set hips position if provided
-    if hips_position:
-        adjust_armature_hips_position(clothing_armature, hips_position, clothing_avatar_data)
+    # if hips_position:
+    #     adjust_armature_hips_position(clothing_armature, hips_position, clothing_avatar_data)
 
     # Process mesh renderers if provided
     if mesh_renderers:
@@ -2723,6 +2764,232 @@ def process_clothing_avatar(input_fbx, clothing_avatar_data_path, hips_position=
     bpy.context.view_layer.objects.active = original_active
 
     return clothing_meshes, clothing_armature, clothing_avatar_data
+
+
+def sync_shape_key_names_from_file(clothing_meshes: list, shape_name_filepath: str) -> None:
+    """
+    Synchronize the blend shape names loaded from shape_name_filepath with the shape key names in clothing_meshes.
+    If a blend shape name in the file contains periods, the portion after the first period and
+    If the shape key name of the target mesh matches, change the shape key name to the original blend shape name in the file.
+
+    Parameters:
+        clothing_meshes: List of mesh objects to be processed
+        shape_name_filepath: Path to the JSON file containing the BlendShape name
+    """
+    if not shape_name_filepath or not os.path.exists(shape_name_filepath):
+        print(f"Shape name file not found: {shape_name_filepath}")
+        return
+
+    try:
+        # Read the JSON file
+        with open(shape_name_filepath, 'r', encoding='utf-8') as f:
+            shape_name_data = json.load(f)
+
+        print(f"Loaded shape name data from: {shape_name_filepath}")
+
+        for mesh_obj in clothing_meshes:
+            if mesh_obj.type != 'MESH':
+                continue
+
+            mesh_name = mesh_obj.name
+
+            # Check if this mesh name exists in the file
+            if mesh_name not in shape_name_data:
+                print(f"  Mesh '{mesh_name}' not found in shape name file, skipping.")
+                continue
+
+            file_shape_names = shape_name_data[mesh_name]
+
+            # If the mesh has no shape keys, skip it
+            if not mesh_obj.data.shape_keys or not mesh_obj.data.shape_keys.key_blocks:
+                print(f"  Mesh '{mesh_name}' has no shape keys, skipping.")
+                continue
+
+            shape_keys = mesh_obj.data.shape_keys.key_blocks
+
+            # Create the current set of shape key names
+            current_shape_names = {sk.name for sk in shape_keys}
+
+            # Create a set of blend shape names in the file
+            file_shape_names_set = set(file_shape_names)
+
+            # Find items that do not match outside of Basis
+            for file_shape_name in file_shape_names:
+                if file_shape_name == 'Basis':
+                    continue
+
+                # If the name in the file exists in the current shape key, skip it
+                if file_shape_name in current_shape_names:
+                    continue
+
+                # If a period is included, retrieve the portion after the first period
+                if '.' in file_shape_name:
+                    after_period = file_shape_name.split('.', 1)[1]
+
+                    # Find a matching shape key among the current ones
+                    for shape_key in shape_keys:
+                        if shape_key.name == 'Basis':
+                            continue
+
+                        if shape_key.name == after_period:
+                            # Change the shape key name to the original blend shape name
+                            old_name = shape_key.name
+                            shape_key.name = file_shape_name
+                            print(f"  Renamed shape key '{old_name}' to '{file_shape_name}' in mesh '{mesh_name}'")
+                            break
+
+        print("Shape key name synchronization completed.")
+
+    except Exception as e:
+        print(f"Error syncing shape key names: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def fix_invalid_vertex_weights(clothing_meshes: list) -> None:
+    """
+    Set any vertex weights in the mesh object that are not finite or are NaN to 0,
+    For each vertex that has lost all bone weights, copy valid weights by tracing up to two edges.
+
+    Parameters:
+        clothing_meshes: List of mesh objects to be processed
+    """
+    import bmesh
+
+    for mesh_obj in clothing_meshes:
+        if mesh_obj.type != 'MESH':
+            continue
+
+        print(f"Fixing invalid vertex weights for mesh: {mesh_obj.name}")
+
+        mesh = mesh_obj.data
+        vertex_groups = mesh_obj.vertex_groups
+
+        if len(vertex_groups) == 0:
+            print(f"  No vertex groups found in {mesh_obj.name}, skipping.")
+            continue
+
+        # Step 1: Set invalid weight values to 0 and track vertices that have lost their weights
+        vertices_without_weights = set()
+        invalid_weight_count = 0
+
+        for vert in mesh.vertices:
+            has_valid_weight = False
+
+            for g in vert.groups:
+                weight = g.weight
+                # Check if it is not finite or NaN
+                if not math.isfinite(weight) or math.isnan(weight):
+                    # Set invalid weights to 0
+                    group_name = vertex_groups[g.group].name
+                    vertex_groups[group_name].add([vert.index], 0.0, 'REPLACE')
+                    invalid_weight_count += 1
+                elif weight > 0.0:
+                    has_valid_weight = True
+
+            if not has_valid_weight:
+                vertices_without_weights.add(vert.index)
+
+        print(f"  Fixed {invalid_weight_count} invalid weight values in {mesh_obj.name}")
+        print(f"  Found {len(vertices_without_weights)} vertices without valid weights")
+
+        if len(vertices_without_weights) == 0:
+            continue
+
+        # Step 2: Use BMesh to obtain edge connection information
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+
+        # Construct vertex edge connection information
+        def get_adjacent_vertices(vert_idx: int) -> set:
+            """Get the index of the vertex adjacent to the specified vertex"""
+            adjacent = set()
+            bm_vert = bm.verts[vert_idx]
+            for edge in bm_vert.link_edges:
+                other_vert = edge.other_vert(bm_vert)
+                adjacent.add(other_vert.index)
+            return adjacent
+
+        def get_vertex_weights(vert_idx: int) -> dict:
+            """Retrieve vertex weight information"""
+            weights = {}
+            vert = mesh.vertices[vert_idx]
+            for g in vert.groups:
+                weight = g.weight
+                if math.isfinite(weight) and not math.isnan(weight) and weight > 0.0:
+                    group_name = vertex_groups[g.group].name
+                    weights[group_name] = weight
+            return weights
+
+        def has_valid_weights(vert_idx: int) -> bool:
+            """Check if the vertex has a valid weight"""
+            vert = mesh.vertices[vert_idx]
+            for g in vert.groups:
+                weight = g.weight
+                if math.isfinite(weight) and not math.isnan(weight) and weight > 0.0:
+                    return True
+            return False
+
+        # Step 3: For vertices with no weight, copy the weight by tracing edges up to two steps
+        fixed_vertices_count = 0
+
+        for vert_idx in vertices_without_weights:
+            # Find the adjacent vertices in the first step
+            first_level_neighbors = get_adjacent_vertices(vert_idx)
+
+            # Find vertices with valid weights in the first step
+            valid_neighbors = []
+            for neighbor_idx in first_level_neighbors:
+                if has_valid_weights(neighbor_idx):
+                    valid_neighbors.append((neighbor_idx, 1))  # (index, distance)
+
+            # If it's not found in the first step, try the second step
+            if not valid_neighbors:
+                second_level_neighbors = set()
+                for neighbor_idx in first_level_neighbors:
+                    second_level = get_adjacent_vertices(neighbor_idx)
+                    # Exclude the original vertex and the vertex of the first step
+                    second_level_neighbors.update(second_level - {vert_idx} - first_level_neighbors)
+
+                for neighbor_idx in second_level_neighbors:
+                    if has_valid_weights(neighbor_idx):
+                        valid_neighbors.append((neighbor_idx, 2))  # (index, distance)
+
+            if not valid_neighbors:
+                print(f"  Warning: Could not find valid weights for vertex {vert_idx} within 2 edge steps")
+                continue
+
+            # Copy the weight from the nearest (first found) adjacent vertex
+            # If there are multiple vertices at the same distance, take the average
+            min_distance = min(n[1] for n in valid_neighbors)
+            closest_neighbors = [n[0] for n in valid_neighbors if n[1] == min_distance]
+
+            # Collect weights from multiple adjacent vertices and average them
+            combined_weights = {}
+            for neighbor_idx in closest_neighbors:
+                neighbor_weights = get_vertex_weights(neighbor_idx)
+                for group_name, weight in neighbor_weights.items():
+                    if group_name not in combined_weights:
+                        combined_weights[group_name] = []
+                    combined_weights[group_name].append(weight)
+
+            # Calculate and set the average weight
+            for group_name, weight_list in combined_weights.items():
+                avg_weight = sum(weight_list) / len(weight_list)
+                if group_name in vertex_groups:
+                    vertex_groups[group_name].add([vert_idx], avg_weight, 'REPLACE')
+
+            if combined_weights:
+                fixed_vertices_count += 1
+
+        bm.free()
+
+        print(f"  Copied weights to {fixed_vertices_count} vertices from neighboring vertices in {mesh_obj.name}")
+
+    print("Finished fixing invalid vertex weights for all meshes")
+
 
 def setup_weight_transfer() -> None:
     """Setup the Robust Weight Transfer plugin settings."""
@@ -3341,6 +3608,25 @@ def remove_empty_vertex_groups(mesh_obj: bpy.types.Object) -> None:
         for g in vert.groups:
             if g.weight > 0.0005:
                 used_vertex_groups[g.group] = True
+
+    # If the total number of vertices in the mesh exceeds 500, perform additional checks
+    total_vertex_count = len(mesh_obj.data.vertices)
+    if total_vertex_count > 500:
+        # Record the number of vertices and weights for each group
+        group_vertex_info = {i: [] for i in range(len(mesh_obj.vertex_groups))}
+        for vert in mesh_obj.data.vertices:
+            for g in vert.groups:
+                if g.weight > 0:  # Record only vertices with weights greater than zero
+                    group_vertex_info[g.group].append(g.weight)
+
+        # If the number of registered vertices is 4 or less and all weights are 0.01 or less, set it to False
+        for group_idx, weights in group_vertex_info.items():
+            if len(weights) <= 4 and len(weights) > 0:
+                if all(w <= 0.01 for w in weights):
+                    if used_vertex_groups[group_idx]:
+                        group_name = mesh_obj.vertex_groups[group_idx].name
+                        print(f"Marking vertex group as unused (low vertex count and weights): {group_name}")
+                    used_vertex_groups[group_idx] = False
 
     groups_to_remove = []
 
@@ -4359,9 +4645,6 @@ def create_hinge_bone_group(obj: bpy.types.Object, armature: bpy.types.Object, a
         bone = armature.pose.bones.get(bone_name)
         if bone.parent and bone.parent.name in bone_groups:
             group_index = obj.vertex_groups.find(bone_name)
-            print(f"Processing hinge bone: {bone_name}")
-            print(f"Bone parent: {bone.parent.name}")
-            print(f"Group index: {group_index}")
             if group_index != -1:
                 bone_head = armature.matrix_world @ bone.head
                 neighbor_indices = kdtree.query_ball_point(bone_head, 0.01)
@@ -6362,7 +6645,7 @@ def get_child_bones_recursive(bone_name: str, armature_obj: bpy.types.Object, cl
     bone = armature_obj.data.bones[bone_name]
     for child in bone.children:
         # For Humanoid bones that are not the first specified bone, exclude that bone and its child bones
-        if not is_root and child.name in humanoid_bones:
+        if child.name in humanoid_bones:
             # Skip this bone and its child bones
             continue
 
@@ -6435,8 +6718,6 @@ def create_blendshape_mask(target_obj, mask_bones, clothing_avatar_data, field_n
                 processed_bones.add(aux_bone)
                 # Add child bones to the auxiliary bone
                 target_bones.update(get_child_bones_recursive(aux_bone, armature_obj, clothing_avatar_data))
-
-    #print(f"target_bones: {target_bones}")
 
     # Calculate the weight of each vertex
     target_groups = {g.index for g in target_obj.vertex_groups if g.name in target_bones}
@@ -11055,7 +11336,7 @@ def transfer_weights_from_nearest_vertex(base_mesh, target_obj, vertex_group_nam
 
         # Search for the nearest face on the base mesh
         nearest_result = bvh_tree.find_nearest(cloth_vert_world)
-        if nearest_result:
+        if nearest_result and len(nearest_result) == 4 and nearest_result[0] is not None and nearest_result[1] is not None and nearest_result[2] is not None:
             # BVHTree.find_nearest() returns (co, normal, index, distance)
             nearest_point, nearest_normal, nearest_face_index, _ = nearest_result
 
@@ -16146,7 +16427,9 @@ def run_smoothing_processor(temp_file_path: str, multi_group: bool = False,
 
         # Environment variables for multithreading
         if max_workers is None:
-            max_workers = os.cpu_count()
+            max_workers = os.cpu_count() - 1
+        if max_workers < 1:
+            max_workers = 1
         env['OMP_NUM_THREADS'] = str(max_workers)
         env['OPENBLAS_NUM_THREADS'] = str(max_workers)
         env['MKL_NUM_THREADS'] = str(max_workers)
@@ -17029,7 +17312,7 @@ def apply_distance_normal_based_smoothing(body_obj, cloth_obj, distance_min=0.0,
         success, output, error = run_smoothing_processor(
             temp_file_path=temp_file,
             multi_group=True,
-            max_workers=os.cpu_count()
+            max_workers=os.cpu_count() - 1
         )
     else:
         print(f"  Since the number of vertices is less than 3000 ({len(vertex_coords)} vertices), we will use the fallback process...")
@@ -19653,13 +19936,31 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         # Process clothing avatar
         print("Status: Processing clothing data")
         print(f"Progress: {(pair_index + 0.15) / total_pairs * 0.9:.3f}")
+
+        # Load bone name conversion data if provided (for armature selection and bone renaming)
+        name_conv_data = None
+        if pair_index == 0 and hasattr(args, 'name_conv') and args.name_conv:
+            try:
+                with open(args.name_conv, 'r', encoding='utf-8') as f:
+                    name_conv_data = json.load(f)
+            except Exception as e:
+                print(f"Warning: Error occurred while loading bone rename data: {e}")
+
         clothing_meshes, clothing_armature, clothing_avatar_data = process_clothing_avatar(
             config_pair['input_clothing_fbx_path'],
             config_pair['clothing_avatar_data'],
             config_pair['hips_position'],
             config_pair['target_meshes'],
-            config_pair['mesh_renderers']
+            config_pair['mesh_renderers'],
+            name_conv_data
         )
+
+        # If shape_name_filepath exists, synchronize the shape key name
+        if config_pair.get('shape_name_filepath'):
+            sync_shape_key_names_from_file(clothing_meshes, config_pair['shape_name_filepath'])
+
+        if pair_index == 0:
+            fix_invalid_vertex_weights(clothing_meshes)
 
         # Convert shape key names based on blend shape mapping
         if config_pair.get('blend_shape_mappings'):
@@ -19670,6 +19971,17 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
 
         clothing_process_time = time.time()
         print(f"Clothing data processing: {clothing_process_time - base_load_time:.2f} seconds")
+
+        # Apply bone name conversion if provided
+        if name_conv_data:
+            try:
+                apply_bone_name_conversion(clothing_armature, clothing_meshes, name_conv_data)
+                print(f"Bone name conversion complete: {args.name_conv}")
+            except Exception as e:
+                print(f"Warning: An error occurred during the bone renaming process: {e}")
+
+        if config_pair['hips_position']:
+            adjust_armature_hips_position(clothing_armature, config_pair['hips_position'], clothing_avatar_data)
 
         global _is_A_pose
         if pair_index == 0:
@@ -19710,6 +20022,33 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         else:
             material_load_time = metadata_load_time
 
+        # Remove isolated vertices and non-finite vertices from clothing_meshes
+        for mesh_obj in clothing_meshes:
+            if mesh_obj.type != 'MESH':
+                continue
+            mesh = mesh_obj.data
+            bm = bmesh.new()
+            bm.from_mesh(mesh)
+
+            # Count isolated vertices (vertices that do not form edges or faces)
+            loose_verts = [v for v in bm.verts if len(v.link_edges) == 0]
+
+            # If there are more than 1000 items, delete them
+            if len(loose_verts) >= 1000:
+                print(f"Removing {len(loose_verts)} loose vertices from {mesh_obj.name}")
+                for v in loose_verts:
+                    bm.verts.remove(v)
+
+            # Remove vertices with non-finite coordinates
+            non_finite_verts = [v for v in bm.verts if not (math.isfinite(v.co.x) and math.isfinite(v.co.y) and math.isfinite(v.co.z))]
+            if non_finite_verts:
+                print(f"Removing {len(non_finite_verts)} non-finite vertices from {mesh_obj.name}")
+                for v in non_finite_verts:
+                    bm.verts.remove(v)
+
+            bm.to_mesh(mesh)
+            bm.free()
+
         # Setup weight transfer
         print("Status: Weight transfer setup in progress")
         print(f"Progress: {(pair_index + 0.25) / total_pairs * 0.9:.3f}")
@@ -19720,16 +20059,6 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
         print("Status: Base Avatar Weight Update in Progress")
         print(f"Progress: {(pair_index + 0.3) / total_pairs * 0.9:.3f}")
         remove_empty_vertex_groups(base_mesh)
-
-        # Apply bone name conversion if provided
-        if pair_index == 0 and hasattr(args, 'name_conv') and args.name_conv:
-            try:
-                with open(args.name_conv, 'r', encoding='utf-8') as f:
-                    name_conv_data = json.load(f)
-                apply_bone_name_conversion(clothing_armature, clothing_meshes, name_conv_data)
-                print(f"Bone name conversion complete: {args.name_conv}")
-            except Exception as e:
-                print(f"Warning: An error occurred during the bone renaming process: {e}")
 
         # Normalize clothing bone names before weight updates
         normalize_clothing_bone_names(clothing_armature, clothing_avatar_data, clothing_meshes)
@@ -20108,8 +20437,6 @@ def process_single_config(args, config_pair, pair_index, total_pairs, overall_st
 
         cycle2_pre_end = time.time()
         print(f"Cycle 2 preprocessing total: {cycle2_pre_end - cycle2_pre_start:.2f} seconds")
-
-        print(f"config_pair.get('next_blendshape_settings', []): {config_pair.get('next_blendshape_settings', [])}")
 
         # Weight Transfer Processing (Considering Inclusion Relationships)
         print("Status: Cycle 2 Weight Transfer in Progress")
